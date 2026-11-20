@@ -1,0 +1,72 @@
+name: build-apk
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# contents:write is required for softprops/action-gh-release to create and
+# move the rolling "latest" tag.
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # The ubuntu-latest image ships the Android SDK with licences accepted.
+      # AGP auto-downloads platforms;android-34 and build-tools;34.0.0 if they
+      # are missing. Echoed so a failure here is diagnosable from the log.
+      - name: Show Android SDK
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME"
+
+      - name: Run unit tests
+        run: ./gradlew testReleaseUnitTest --stacktrace
+
+      - name: Build signed release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      # Fixed filename on purpose: it makes the Release download URL permanent
+      # and stops assets accumulating on the rolling "latest" release. The
+      # commit is identified in the release body instead.
+      - name: Stage APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk dist/bt-reset.apk
+          ls -la dist
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bt-reset-${{ github.sha }}
+          path: dist/bt-reset.apk
+
+      - name: Publish to the rolling "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: |
+            Rolling build from `main`. Overwrites itself on every push.
+
+            - Commit: `${{ github.sha }}`
+            - Run: ${{ github.run_id }}
+
+            手机直接下载下面的 `bt-reset.apk` 覆盖安装即可 —— 签名固定，不会丢权限。
+          files: dist/bt-reset.apk
+          make_latest: true
