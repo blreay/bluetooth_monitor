@@ -29,7 +29,53 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="false">
 
-        <!-- Components are declared in Task 11, once the classes exist. -->
+        <!--
+          Invisible. excludeFromRecents and an empty taskAffinity keep it out
+          of the recents list and stop it creating a visible task.
+
+          exported=true is required: it is the launcher target and the entry
+          point for Tasker / MacroDroid / Automate / `am start`.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/Theme.BtReset.Invisible">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- For automation tools that prefer an explicit action. -->
+            <intent-filter>
+                <action android:name="com.blreay.bluetoothmonitor.action.RUN" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          exported=true with no permission guard, on purpose, so Tasker /
+          MacroDroid / Termux can trigger it. Worst case for an uninvited
+          caller is one extra Bluetooth cycle.
+        -->
+        <receiver
+            android:name=".TriggerReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.blreay.bluetoothmonitor.action.RESET_IF_PRESENT" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          exported=false: reached only by our own explicit PendingIntent.
+          Manifest-declared (not runtime-registered) so the system can start
+          the process to deliver the alarm after MIUI has reclaimed it.
+          No intent-filter needed - the PendingIntent is explicit.
+        -->
+        <receiver
+            android:name=".ReEnableReceiver"
+            android:exported="false" />
 
     </application>
 </manifest>
