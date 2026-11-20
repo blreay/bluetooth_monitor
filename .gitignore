@@ -1,0 +1,17 @@
+# Gradle
+.gradle/
+build/
+*/build/
+
+# Android
+local.properties
+*.apk.idsig
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Deliberately NOT ignored:
+#   keystore/release.jks                  - stable signature, see gradle.properties
+#   gradle/wrapper/gradle-wrapper.jar     - CI needs it to run ./gradlew
