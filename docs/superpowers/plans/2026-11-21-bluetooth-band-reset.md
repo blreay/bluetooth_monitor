@@ -2434,3 +2434,107 @@ Never collapse those into "it works".
 | Band never appears in `seen ...` logs | It is connected, so it is not advertising | Expected. Disconnect it in Mi Fitness first. |
 | CI: `Failed to find target 'android-34'` | Runner SDK incomplete | Add the explicit `sdkmanager` step from Task 14 Step 3. |
 | `./gradlew` fails in CI | Wrapper jar not committed | `git ls-files gradle/wrapper/`; re-run Task 3 Step 5 if empty. |
+
+---
+
+## Execution record (2026-11-21)
+
+All 14 tasks executed. Two contingencies fired, and one environment problem
+was not anticipated by the plan at all. Recorded here because each one would
+otherwise be rediscovered from scratch.
+
+### 1. Unanticipated: a TLS-intercepting proxy breaks every Java download
+
+`sdkmanager` failed with `Failed to download any source lists! / IO exception
+while downloading manifest`, while `curl` reached the *same* URLs with HTTP
+200. Cause: the machine sits behind a mitmproxy (`NODE_EXTRA_CA_CERTS` points
+at `/opt/opensandbox/mitmproxy-ca-cert.pem`). `curl` trusts it via the system
+CA store; a freshly downloaded JDK trusts only its own
+`lib/security/cacerts`, which does not contain it.
+
+**Fix — required before any Java-based download will work here:**
+
+```bash
+keytool -importcert -noprompt -trustcacerts \
+  -alias opensandbox-mitmproxy \
+  -file /opt/opensandbox/mitmproxy-ca-cert.pem \
+  -keystore "$JAVA_HOME/lib/security/cacerts" -storepass changeit
+```
+
+This also covers Gradle's dependency resolution, since Gradle runs on the same
+JDK. Without it, `sdkmanager` and Maven Central both fail while `curl` looks
+perfectly healthy — a genuinely misleading symptom.
+
+Second, smaller trap: `sdkmanager` needs `yes |` piped into the *install*
+command, not just into `--licenses`. Running `--licenses` first while the
+network is still broken silently accepts nothing, and the later install then
+stops at the prompt while still exiting 0 in some paths. Verify by listing
+`$ANDROID_HOME/platforms`, not by trusting the exit code.
+
+### 2. Contingency #1 fired: the runner has no usable Android platform
+
+CI run #1 (`c5ea777`) failed at the first `./gradlew` invocation. Steps 1-5,
+including the SDK echo, all passed; `testReleaseUnitTest` died with exit code
+1. The plan's assumption that "AGP auto-downloads `platforms;android-34`" is
+**wrong on this runner image**.
+
+The job log was unreadable from here — the Actions logs endpoint returns
+`403 Must have admin rights to Repository` for unauthenticated callers, even
+on a public repo, and `github.com` HTML times out (though `api.github.com`
+responds normally in ~1s, which is what made diagnosis possible at all).
+
+Rather than guess, the cause was confirmed from evidence inside this same
+repo: a sibling branch `gpt` (a separate, earlier attempt at this task, not
+part of this work) had hit the identical failure and fixed it in a commit
+titled `ci: use preinstalled hosted Android SDK for APK builds`. Its diff
+drops `android-actions/setup-android@v3` and instead invokes
+`"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"` **by absolute path** —
+`sdkmanager` is not on `PATH` on the hosted runner.
+
+Fix applied in `247fde1`: explicit `Verify hosted Android SDK` +
+`Install Android platform and build-tools` steps using that absolute path,
+installing `platform-tools`, `platforms;android-34`, `build-tools;34.0.0`.
+Also moved to `actions/setup-java@v5` (the runner annotated v4 as
+deprecated), added `timeout-minutes: 30`, and set `if-no-files-found: error`
+on the artifact upload so a missing APK fails loudly instead of publishing an
+empty artifact. Workflow is now 10 steps, not the 9 the plan predicted.
+
+CI run #2 (`247fde1`) passed all 10 steps.
+
+### 3. Local reproduction could not reproduce the CI failure
+
+A fresh clone into `/tmp` with a cold `GRADLE_USER_HOME` ran the exact CI
+command `testReleaseUnitTest` to `BUILD SUCCESSFUL in 3m`. So the failure was
+never about the cold cache or a missing committed file — `git ls-tree -r HEAD`
+confirmed the keystore, wrapper jar and `gradle.properties` are all tracked.
+The difference was purely the runner's SDK contents. Worth remembering: a
+green local build says nothing about the hosted SDK.
+
+### 4. Verified properties of the published artifact
+
+The APK was downloaded back out of the Release via the asset API and inspected
+with `aapt2`/`apksigner`, rather than trusting the build log:
+
+| Property | Value |
+|---|---|
+| `package` | `com.blreay.bluetoothmonitor` |
+| `versionCode` | `3` — proves the `GITHUB_RUN_NUMBER` derivation (run #2 → 2+1) |
+| `sdkVersion` / `targetSdkVersion` | `31` / **`32`** ← the load-bearing one |
+| `BLUETOOTH_SCAN` flags | `neverForLocation` present |
+| `launchable-activity` | `com.blreay.bluetoothmonitor.MainActivity` |
+| Signer DN | `CN=blreay, OU=personal, O=blreay, L=local, ST=local, C=CN` |
+| Signer SHA-256 | `2ebfee29e52a9867240060922a62e1c32bdf3ee587911a657082118235292dad` — **identical to `keystore/release.jks`** |
+| Signature scheme | v2 verified |
+
+The CI APK's sha256 differs from the local build's only because `versionCode`
+differs (3 vs 1), which changes the encoded manifest. The *signature* is what
+must match across builds, and it does — that is the property that keeps
+overwrite-install from discarding the granted Nearby-devices permission.
+
+### 5. Still unverified
+
+On-device behaviour. Nothing here proves that MIUI permits `disable()` at
+`targetSdk 32`, that it does not add its own confirmation dialog, or that the
+exact alarm survives MIUI process management. Those need the phone checklist
+in Task 14 Step 5.
+
