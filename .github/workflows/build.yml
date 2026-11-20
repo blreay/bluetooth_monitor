@@ -13,27 +13,39 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      # The ubuntu-latest image ships the Android SDK with licences accepted.
-      # AGP auto-downloads platforms;android-34 and build-tools;34.0.0 if they
-      # are missing. Echoed so a failure here is diagnosable from the log.
-      - name: Show Android SDK
+      # The hosted image has an Android SDK but NOT necessarily the platform
+      # this project compiles against, and `sdkmanager` is not on PATH - it
+      # must be invoked by absolute path. Relying on AGP's auto-download
+      # failed here, so install the exact packages up front.
+      - name: Verify hosted Android SDK
         run: |
           echo "ANDROID_HOME=$ANDROID_HOME"
+          test -n "$ANDROID_HOME"
+          test -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
           ls "$ANDROID_HOME"
+
+      - name: Install Android platform and build-tools
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          ls "$ANDROID_HOME/platforms" "$ANDROID_HOME/build-tools"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Run unit tests
         run: ./gradlew testReleaseUnitTest --stacktrace
@@ -55,6 +67,9 @@ jobs:
         with:
           name: bt-reset-${{ github.sha }}
           path: dist/bt-reset.apk
+          # Fail loudly rather than publishing an empty artifact if the APK
+          # was somehow not produced.
+          if-no-files-found: error
 
       - name: Publish to the rolling "latest" release
         uses: softprops/action-gh-release@v2
