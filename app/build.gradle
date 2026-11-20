@@ -1,0 +1,32 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.blreay.bluetoothmonitor'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.blreay.bluetoothmonitor'
+        minSdk 26
+        // Intentional: this private sideloaded utility uses legacy Bluetooth toggle APIs.
+        targetSdk 32
+        versionCode 1
+        versionName '1.0'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        // Sideload only: target 32 is required for the public Bluetooth toggle compatibility path.
+        // Exempt the Play submission rule only; all other lint errors remain fatal.
+        disable 'ExpiredTargetSdkVersion'
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+}

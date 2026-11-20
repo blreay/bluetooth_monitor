@@ -1,0 +1,4 @@
+// Gradle wrapper version: 8.9. Run Gradle with JDK 17.
+plugins {
+    id 'com.android.application' version '8.7.3' apply false
+}
