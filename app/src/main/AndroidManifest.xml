@@ -18,6 +18,21 @@
       back to an inexact alarm and says so loudly in the log.
     -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <!--
+      The run-result notification is the app's only durable output: every
+      failure path used to be silent, so there was no way to tell a working
+      run from a broken one without a computer attached.
+
+      Not enforced as a runtime permission at targetSdk 32 - Android 13's
+      POST_NOTIFICATIONS prompt only applies to apps targeting 33+. For an app
+      targeting 32 the system shows the prompt itself the first time a
+      notification channel is created after an activity starts, so the grant
+      still happens, just driven by the system instead of by us. Declared
+      anyway because it states the intent and is what a future targetSdk bump
+      would need. RunNotification checks areNotificationsEnabled() and falls
+      back to a Toast when it is off.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
         android:name="android.hardware.bluetooth_le"
