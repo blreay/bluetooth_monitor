@@ -13,8 +13,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <!--
       Granted by default at targetSdk 32. Android 13's deny-by-default only
-      applies to apps targeting 33+. Checked at runtime anyway, with an
-      in-process fallback if it is missing.
+      applies to apps targeting 33+. Checked at runtime anyway via
+      canScheduleExactAlarms(); if it is missing the re-enable chain falls
+      back to an inexact alarm and says so loudly in the log.
     -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
@@ -30,8 +31,21 @@
         android:supportsRtl="false">
 
         <!--
-          Invisible. excludeFromRecents and an empty taskAffinity keep it out
-          of the recents list and stop it creating a visible task.
+          The launcher icon, and nothing else. It dispatches and finishes
+          inside onCreate().
+
+          Theme.NoDisplay means the system never creates a window for it, so
+          it never takes input focus. v1 used a translucent theme and stayed
+          alive for seconds, which kept the home screen visible but dead to
+          touch - the jank this replaces. NoDisplay requires finish() before
+          onResume(), which is exactly what MainActivity does.
+
+          A launcher icon requires an Activity: launchers enumerate
+          MAIN/LAUNCHER activities, and a Service never appears on the home
+          screen.
+
+          excludeFromRecents and an empty taskAffinity keep it out of the
+          recents list and stop it creating a visible task.
 
           exported=true is required: it is the launcher target and the entry
           point for Tasker / MacroDroid / Automate / `am start`.
@@ -42,7 +56,7 @@
             android:exported="true"
             android:launchMode="singleTop"
             android:taskAffinity=""
-            android:theme="@style/Theme.BtReset.Invisible">
+            android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -53,6 +67,35 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!--
+          The only window this app ever creates, and it only appears on first
+          run - the grant persists across launches and across overwrite
+          installs, because the signing key is fixed.
+
+          Separate from MainActivity because NoDisplay cannot survive to
+          onRequestPermissionsResult.
+
+          exported=false: reached only by our own startActivity from
+          MainActivity.
+        -->
+        <activity
+            android:name=".PermissionActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity=""
+            android:theme="@style/Theme.BtReset.Invisible" />
+
+        <!--
+          Runs the fast phase for the launcher-icon path. Started, not
+          foreground: a foreground Service would show a notification, and
+          Android 12+ blocks background apps from starting one.
+
+          exported=false: reached only by our own startService.
+        -->
+        <service
+            android:name=".ResetService"
+            android:exported="false" />
 
         <!--
           exported=true with no permission guard, on purpose, so Tasker /
