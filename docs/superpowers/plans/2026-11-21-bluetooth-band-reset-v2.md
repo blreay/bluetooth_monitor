@@ -2624,3 +2624,39 @@ git push origin main
 - `origin/main` = `d35d9b9`，工作区干净
 - 下载地址不变：`https://github.com/blreay/bluetooth_monitor/releases/download/latest/bt-reset.apk`
 - 待用户按 spec §10 四条验收标准做真机验收
+
+## Follow-up (2026-11-22)：第二轮真机反馈
+
+用户报告：设备明明能看到，点图标却"马上退出、没有任何反应"，但有时又能找到。
+
+### 证伪了一条上面写过的结论
+
+本文件 Task 15 的 README 模板（第 2288 行）、v1 计划（第 2097/2103/2433 行）和 v2 spec（第 303 行）都写着"BLE 扫描节流会记 `onScanFailed errorCode=2`"。**这是错的。**
+
+30 秒 5 次的配额是**静默**执行的：第 6 次 `startScan` 被正常接受，不抛异常，**永远不回调 `onScanFailed`**，然后拿不到任何结果。`errorCode=2` 是 `SCAN_FAILED_APPLICATION_REGISTRATION_FAILED`，指全系统并发扫描客户端过多，是另一回事。这条错误结论同时存在于代码注释里，两处都已改正（`aa2dff2`、`33dde4a`）。上面三处历史文档保留原文不改，以本节为准。
+
+这也解释了"有时能找到"：不是匹配逻辑不稳定，是连续点图标把自己限流了。
+
+### "没有任何反应"的真正原因
+
+不是扫描失败，是**所有失败路径都不产生任何可见输出**。十条 emit 路径全部经过 `Notifier.outcome()`，而它在 `wantsToast == false` 时直接 return —— 点桌面图标正是 false。于是六种互不相同的失败（无适配器、蓝牙没开、缺权限、没找到、系统拒绝关闭、扫描出错）在用户眼里长得一模一样：什么都没有。
+
+### 做了什么
+
+- `RunReport`（纯 Kotlin，零 Android 依赖，14 个单元测试）：把一个沉默的 NOT_FOUND 分类成五种可解释的原因。判据是 `devicesSeen` —— 为 0 说明扫描被饿死（限流或 MIUI 拦截），数字正常但没目标说明手环没在广播。
+- `RunNotification`：**每次运行无条件发一条通知**，固定 id（第二次覆盖第一次），`IMPORTANCE_LOW`（不响铃不弹横幅，满足"对正常使用手机没有任何影响"），通知权限被关时退回 Toast。
+- `BandResetController.Session` 边扫边收集事实：已扫时长、去重设备数、带广播名的设备数、疑似但未匹配的样本、目标是否在已配对列表里。这些事后无法重建，是收集它们的唯一理由。
+- `targetBonded` 专门用来回答用户的"明明能看到"：设置→蓝牙里那个列表是**已配对设备**，配对记录存在本机，跟手环此刻有没有在发广播是两回事。已配对 + 扫不到，是预期组合而非故障。
+
+上面"没证过的"第 3 条预见了这个方向（"真机看不到就退回 Notification"），但当时只把它当作 Toast 的兜底，没意识到失败路径**根本没有任何输出**才是主症。
+
+### 关于 `BLUETOOTH_PRIVILEGED`
+
+用户问能不能在工程文件里显式申请"蓝牙完全控制权限"。结论是**不写**：它的 protection level 是 `signature|privileged`，写进 manifest 也永远不会被授予第三方应用；而且就算授予了也压不住那个弹框 —— 弹框来自 MIUI 私有的「开关蓝牙」权限，不是 Android 权限体系里的东西。写一行拿不到的权限只是给 manifest 增加死重量，README 第 43 行已把这件事讲清楚。
+
+### 交付状态
+
+- `origin/main` = `33dde4a`，CI run #6 绿
+- 发布产物独立验证过：`versionCode=7`，`targetSdkVersion=32`，四个权限含 `POST_NOTIFICATIONS`，五个组件齐全，两个 Bluetooth 矢量图都在，签名证书 SHA-256 `2ebfee29…` 与上一版相同（可覆盖安装，不丢已授权限）
+- 42 个单元测试全绿（BandMatcher 10 + ReEnablePolicy 18 + RunReport 14）
+- README 的 17 行日志表逐条对着源码核过；11 个 logcat tag 与源码 `TAG` 常量精确一致
