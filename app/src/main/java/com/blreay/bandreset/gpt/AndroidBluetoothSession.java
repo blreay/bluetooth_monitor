@@ -27,9 +27,10 @@ import java.util.Collections;
 import java.util.List;
 import java.util.function.Consumer;
 
-/** One main-thread-owned Android port; no cached or bonded device-name lookup.
- * Runtime grants are checked by BandResetActivity and at scan start; revocations are caught
- * at every Bluetooth operation, including cleanup. The API checks span helper methods.
+/**
+ * One main-thread-owned Android port; no cached or bonded device-name lookup.
+ * Broadcasts are treated as prompts to read the actual adapter snapshot, never
+ * as authoritative state.
  */
 @SuppressLint("MissingPermission")
 final class AndroidBluetoothSession implements ResetController.Port {
@@ -43,6 +44,7 @@ final class AndroidBluetoothSession implements ResetController.Port {
     private final Context context;
     private final Handler mainHandler;
     private final Consumer<String> completion;
+    private final Consumer<String> phaseListener;
     private final ResetController controller;
     private BluetoothAdapter adapter;
     private BluetoothLeScanner scanner;
@@ -53,12 +55,12 @@ final class AndroidBluetoothSession implements ResetController.Port {
     private boolean closed;
 
     private final BroadcastReceiver stateReceiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context ignored, Intent intent) {
+        @Override
+        public void onReceive(Context ignored, Intent intent) {
             if (closed || !BluetoothAdapter.ACTION_STATE_CHANGED.equals(intent.getAction())) return;
             requireMainThread();
             try {
                 int broadcast = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
-                // A mismatch is diagnostic only, never a reason to drop the state prompt.
                 ResetController.BluetoothState snapshot = bluetoothState();
                 diagnostic("BROADCAST state=" + broadcast + " snapshot=" + snapshot);
             } catch (RuntimeException error) {
@@ -70,11 +72,13 @@ final class AndroidBluetoothSession implements ResetController.Port {
         }
     };
 
-    AndroidBluetoothSession(Context context, Handler mainHandler, Consumer<String> completion) {
+    AndroidBluetoothSession(Context context, Handler mainHandler,
+                            Consumer<String> completion, Consumer<String> phaseListener) {
         requireMainThread();
         this.context = context;
         this.mainHandler = mainHandler;
         this.completion = completion;
+        this.phaseListener = phaseListener;
         controller = new ResetController(this);
     }
 
@@ -100,11 +104,12 @@ final class AndroidBluetoothSession implements ResetController.Port {
         }
     }
 
-    @Override public long nowMs() {
-        return SystemClock.elapsedRealtime();
-    }
+    // region Port implementation
 
-    @Override public ResetController.BluetoothState bluetoothState() {
+    @Override public long nowMs() { return SystemClock.elapsedRealtime(); }
+
+    @Override
+    public ResetController.BluetoothState bluetoothState() {
         requireMainThread();
         if (adapter == null) return ResetController.BluetoothState.UNKNOWN;
         try {
@@ -172,8 +177,6 @@ final class AndroidBluetoothSession implements ResetController.Port {
                 }
             };
             scanCallback = callback;
-            // A named filter keeps screen-off scans eligible. Shortened-name-only packets
-            // cannot satisfy the full exact name and intentionally do not trigger a reset.
             ScanFilter filter = new ScanFilter.Builder().setDeviceName(ResetController.TARGET_NAME).build();
             ScanSettings settings = new ScanSettings.Builder()
                     .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).setReportDelay(0).build();
@@ -204,11 +207,8 @@ final class AndroidBluetoothSession implements ResetController.Port {
         scanCallback = null;
         scanner = null;
         if (oldCallback == null || oldScanner == null) return;
-        try {
-            oldScanner.stopScan(oldCallback);
-        } catch (RuntimeException error) {
-            reportFailure("SCAN_STOP_FAILED", error);
-        }
+        try { oldScanner.stopScan(oldCallback); }
+        catch (RuntimeException error) { reportFailure("SCAN_STOP_FAILED", error); }
     }
 
     @Override public void onMatch() {
@@ -216,6 +216,8 @@ final class AndroidBluetoothSession implements ResetController.Port {
         if (feedback.match()) {
             diagnostic("TARGET_MATCH");
             shortToast(R.string.target_found);
+            // Push a phase update so the notification reflects the match.
+            if (phaseListener != null) phaseListener.accept("WAITING_OFF");
         }
     }
 
@@ -271,7 +273,8 @@ final class AndroidBluetoothSession implements ResetController.Port {
         close();
     }
 
-    /** Terminal cleanup only, not cancellation: destruction cannot await bounded recovery. */
+    // endregion
+
     void close() {
         requireMainThread();
         if (closed) return;
@@ -282,11 +285,8 @@ final class AndroidBluetoothSession implements ResetController.Port {
         stopScan();
         if (receiverRegistered) {
             receiverRegistered = false;
-            try {
-                context.unregisterReceiver(stateReceiver);
-            } catch (RuntimeException error) {
-                reportFailure("RECEIVER_CLEANUP_FAILED", error);
-            }
+            try { context.unregisterReceiver(stateReceiver); }
+            catch (RuntimeException error) { reportFailure("RECEIVER_CLEANUP_FAILED", error); }
         }
         diagnostic("CLEANUP_COMPLETE");
     }
@@ -301,11 +301,8 @@ final class AndroidBluetoothSession implements ResetController.Port {
     }
 
     private void shortToast(int resource) {
-        try {
-            Toast.makeText(context, resource, Toast.LENGTH_SHORT).show();
-        } catch (RuntimeException error) {
-            reportFailure("TOAST_FAILED", error);
-        }
+        try { Toast.makeText(context, resource, Toast.LENGTH_SHORT).show(); }
+        catch (RuntimeException error) { reportFailure("TOAST_FAILED", error); }
     }
 
     private void logPhase() {
@@ -313,6 +310,7 @@ final class AndroidBluetoothSession implements ResetController.Port {
         if (!phase.equals(lastPhase)) {
             lastPhase = phase;
             diagnostic("PHASE " + phase);
+            if (phaseListener != null) phaseListener.accept(phase);
         }
     }
 
@@ -322,12 +320,11 @@ final class AndroidBluetoothSession implements ResetController.Port {
     }
 
     private void reportFailure(String reason, RuntimeException error) {
-        // No exception messages/stack traces: vendor messages can include device identifiers.
-        // Read/toggle/cleanup failures are diagnostics, not immediate controller termination.
         diagnostic(reason + " exception=" + error.getClass().getSimpleName());
     }
 
     private static void requireMainThread() {
-        if (Looper.myLooper() != Looper.getMainLooper()) throw new IllegalStateException("Main thread required");
+        if (Looper.myLooper() != Looper.getMainLooper())
+            throw new IllegalStateException("Main thread required");
     }
 }

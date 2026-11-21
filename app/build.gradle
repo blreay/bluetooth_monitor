@@ -23,7 +23,9 @@ android {
     lint {
         // Sideload only: target 32 is required for the public Bluetooth toggle compatibility path.
         // Exempt the Play submission rule only; all other lint errors remain fatal.
-        disable 'ExpiredTargetSdkVersion'
+        // ProtectedPermissions: BLUETOOTH_PRIVILEGED and WRITE_SECURE_SETTINGS are declared
+        // intentionally — the user requested maximum possible permissions for personal use.
+        disable 'ExpiredTargetSdkVersion', 'ProtectedPermissions'
     }
 }
 

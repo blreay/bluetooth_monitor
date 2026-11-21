@@ -1,14 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Legacy Bluetooth admin APIs (API ≤ 30). -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
+    <!-- Modern Bluetooth runtime permissions. -->
     <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <!-- No neverForLocation assertion: do not opt in to beacon filtering. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+
+    <!-- Location — required for BLE scan results on Android ≤ 11. -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!-- Foreground service + wake lock. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Notification — API 34+ requires runtime grant. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- System-level Bluetooth control (signature|privileged — only granted on
+         system-signed builds; harmless to declare on ordinary sideloaded APKs). -->
+    <uses-permission android:name="android.permission.BLUETOOTH_PRIVILEGED" />
+
+    <!-- Settings write — may allow Bluetooth toggle on some OEM builds when granted
+         via adb shell pm grant. Declared so it appears in the app-info permission list. -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+
+    <!-- BLE hardware (optional — the app works without BLE but won't scan). -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <application
@@ -24,8 +47,7 @@
             android:exported="true"
             android:excludeFromRecents="true"
             android:launchMode="singleTop"
-            android:taskAffinity=""
-            android:theme="@style/Theme.BluetoothMonitor">
+            android:taskAffinity="">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
