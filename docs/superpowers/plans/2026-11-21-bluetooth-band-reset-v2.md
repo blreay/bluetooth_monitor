@@ -423,7 +423,78 @@ Expected: `BUILD SUCCESSFUL`。检查 `app/build/test-results/testReleaseUnitTes
 
 合计 28 条。
 
-- [ ] **Step 5: Commit**
+读结果**不要**用 `grep`/正则手搓 —— `<testcase>` 成功时是自闭合的 `<testcase ... />`，非贪婪正则会跨条误配，把失败安到别的测试头上（实测踩过）。用 ElementTree：
+
+```bash
+python3 -c "
+import xml.etree.ElementTree as ET
+r=ET.parse('app/build/test-results/testReleaseUnitTest/TEST-com.blreay.bluetoothmonitor.ReEnablePolicyTest.xml').getroot()
+print({k:r.get(k) for k in ('tests','failures','errors')})
+for tc in r.findall('testcase'):
+    f=tc.find('failure')
+    if f is not None: print('FAILED:', tc.get('name'), '|', (f.get('message') or '')[:90])
+"
+```
+
+- [ ] **Step 5: 变异测试 —— 确认这 18 条真的能抓到 bug**
+
+全绿本身不证明什么。`decide()` 里那三条求值顺序规则各自对应一个真实故障，逐一破坏一次，确认对应测试变红。两次变异各约 3 秒。
+
+**变异 A：把上限检查挪到最前面**（破坏"成功判定先于放弃判定"）
+
+```kotlin
+    fun decide(state: AdapterState, phase: Phase, attempts: Int): Action {
+        if (attempts >= MAX_ATTEMPTS) {
+            return if (phase == Phase.WAITING_OFF) {
+                Action.GIVE_UP_NEVER_TURNED_OFF
+            } else {
+                Action.GIVE_UP_NEVER_TURNED_BACK_ON
+            }
+        }
+        if (state == AdapterState.UNKNOWN) return Action.GIVE_UP_NO_ADAPTER
+        if (phase == Phase.WAITING_ON && state == AdapterState.ON) return Action.DONE_RESTORED
+        return if (state == AdapterState.OFF) Action.ENABLE_AND_RETRY else Action.RETRY
+    }
+```
+
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" testReleaseUnitTest --tests '*ReEnablePolicyTest*'`
+Expected: `BUILD FAILED`，`failures="2"`，且**恰好**是这两条：
+
+```
+FAILED: success beats the attempt cap | expected:<DONE_RESTORED> but was:<GIVE_UP_NEVER_TURNED_BACK_ON>
+FAILED: no adapter beats the attempt cap | expected:<GIVE_UP_NO_ADAPTER> but was:<GIVE_UP_NEVER_TURNED_BACK_ON>
+```
+
+**变异 B：把上限检查挪到 `RETRY` 之后**（破坏"放弃判定先于 RETRY"，这是更危险的那个 —— 闹钟链会无限自我重排）
+
+```kotlin
+    fun decide(state: AdapterState, phase: Phase, attempts: Int): Action {
+        if (state == AdapterState.UNKNOWN) return Action.GIVE_UP_NO_ADAPTER
+        if (phase == Phase.WAITING_ON && state == AdapterState.ON) return Action.DONE_RESTORED
+        if (state != AdapterState.OFF) return Action.RETRY
+        if (attempts >= MAX_ATTEMPTS) {
+            return if (phase == Phase.WAITING_OFF) {
+                Action.GIVE_UP_NEVER_TURNED_OFF
+            } else {
+                Action.GIVE_UP_NEVER_TURNED_BACK_ON
+            }
+        }
+        return Action.ENABLE_AND_RETRY
+    }
+```
+
+Expected: `BUILD FAILED`，`failures="2"`，且**恰好**是这两条：
+
+```
+FAILED: waiting off at the cap gives up as never turned off | expected:<GIVE_UP_NEVER_TURNED_OFF> but was:<RETRY>
+FAILED: still on at the cap gives up instead of retrying forever | expected:<GIVE_UP_NEVER_TURNED_OFF> but was:<RETRY>
+```
+
+`but was:<RETRY>` 就是那个无限循环：`ReEnableReceiver` 会一直 `attempts+1` 再排一跳，永不停止。
+
+**两次变异之后，把 `decide()` 改回 Step 3 的版本，重跑 Step 4 确认 28 条全绿再提交。** 变异体绝不能进 commit。
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add app/src/main/java/com/blreay/bluetoothmonitor/ReEnablePolicy.kt app/src/test/java/com/blreay/bluetoothmonitor/ReEnablePolicyTest.kt
