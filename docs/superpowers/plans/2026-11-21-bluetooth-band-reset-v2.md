@@ -801,8 +801,8 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
     <!-- Shown unconditionally once the chain observes STATE_ON again. -->
     <string name="toast_restored">蓝牙已恢复</string>
 
-    <!-- Debug only: `am start ... -&#45;ez toast true`. %1$s is the Result or
-         Action enum name, which is why it is a format string. -->
+    <!-- Debug only, enabled by the toast extra (Notifier.EXTRA_TOAST). %1$s is
+         the Result or Action enum name, which is why this is a format string. -->
     <string name="toast_outcome">蓝牙重启: %1$s</string>
 
     <!-- Always shown, regardless of the debug flag: if the grant is missing
@@ -811,7 +811,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 </resources>
 ```
 
-注意 `toast_outcome` 的注释里 `--ez` 被写成 `-&#45;ez`：Android 资源编译器会把 XML 注释里的 `--` 当成非法序列。
+**XML 注释里不要出现字面的 `--ez`。** XML 规范禁止注释内出现 `--`，多数解析器会直接报错。不要用 `-&#45;` 这种转义绕过 —— XML 注释里的字符引用不会被解析，源码里就留下一串 mojibake。正确做法是注释里只提"toast extra"，把带 `--ez toast true` 的完整命令示例放进 `Notifier.EXTRA_TOAST` 的 **Kotlin KDoc**（那里 `--` 完全合法），提交后的 `Notifier.kt` 就是这么写的。
 
 - [ ] **Step 2: 写 Notifier**
 

@@ -1,4 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">蓝牙重启</string>
+
+    <!-- Shown unconditionally the moment the band is seen. Short duration,
+         no confirmation needed, disappears by itself. -->
+    <string name="toast_band_found">已找到手环，正在重启蓝牙…</string>
+
+    <!-- Shown unconditionally once the chain observes STATE_ON again. -->
+    <string name="toast_restored">蓝牙已恢复</string>
+
+    <!-- Debug only, enabled by the toast extra (Notifier.EXTRA_TOAST). %1$s is
+         the Result or Action enum name, which is why this is a format string. -->
+    <string name="toast_outcome">蓝牙重启: %1$s</string>
+
+    <!-- Always shown, regardless of the debug flag: if the grant is missing
+         nothing works and the user has no other way to find out why. -->
+    <string name="toast_permission_denied">未授予「附近的设备」权限，无法扫描或开关蓝牙</string>
 </resources>
