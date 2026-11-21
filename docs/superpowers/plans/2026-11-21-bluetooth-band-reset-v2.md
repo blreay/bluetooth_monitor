@@ -913,15 +913,28 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 ---
 
-### Task 6: 快段改用闹钟链（ReEnableScheduler + BandResetController）
+### Task 6: 快段改用闹钟链（四个文件，必须同一个 commit）
 
 **Files:**
 - Rewrite: `app/src/main/java/com/blreay/bluetoothmonitor/ReEnableScheduler.kt`
 - Modify: `app/src/main/java/com/blreay/bluetoothmonitor/BandResetController.kt`
+- Modify: `app/src/main/java/com/blreay/bluetoothmonitor/TriggerReceiver.kt`（原 Task 12，已并入，见下）
+- Modify: `app/src/main/java/com/blreay/bluetoothmonitor/MainActivity.kt`（**仅过渡桥接**，完整重写在 Task 11）
 
-两个文件必须同一个 commit 改完：`ReEnableScheduler.schedule(context, handler)` 的唯一调用方就是 `BandResetController.cycleBluetooth()`，分开改中间那次 commit 编译不过。
+**执行时实测发现原计划这一步漏了两个文件，已修正。** 原本以为只有 scheduler 和 controller 需要一起改（理由仍然成立：`schedule()` 的唯一调用方就是 `cycleBluetooth()`）。但实际编译报了三条错：
 
-改完之后**全项目不再有任何进程内重开定时器**。
+```
+e: MainActivity.kt:71:13 No value passed for parameter 'wantsToast'
+e: MainActivity.kt:81:35 Unresolved reference: IN_PROCESS_DELAY_MS
+e: TriggerReceiver.kt:55:61 No value passed for parameter 'wantsToast'
+```
+
+原因是 `run()` 的签名变了**且** `IN_PROCESS_DELAY_MS` 被删了，这两件事同时作废了两个 v1 入口。没有任何更小的可编译单元 —— 修 `MainActivity` 需要 `ResetService`（Task 9），而 `ResetService` 又需要新的 `run()` 签名。所以：
+
+- **`TriggerReceiver` 的正式改动并入本任务**（就是原 Task 12 的全部内容，三行，见下面的 Step 5b）。Task 12 作废。
+- **`MainActivity` 只做过渡桥接**：删掉那个 3.5 秒人为延迟（这本来就是卡顿修复的一部分）、给 `run()` 补上 `wantsToast`、删掉随之失效的 `FINISH_GRACE_MS`。它的 NoDisplay 完整重写仍然在 Task 11，因为那需要 `ResetService` 和 `PermissionActivity` 先存在。
+
+改完之后**全项目不再有任何进程内重开定时器**（`grep` 验证见 Step 6）。
 
 - [ ] **Step 1: 重写 ReEnableScheduler**
 
@@ -1226,19 +1239,115 @@ object ReEnableScheduler {
 
 `DISABLE_FAILED` 那条（"Bluetooth is still ON. No re-enable was scheduled."）继续成立，不动。
 
-- [ ] **Step 6: 编译 + 全量测试**
+- [ ] **Step 5b: 改 TriggerReceiver（原 Task 12 的全部内容）**
 
-Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" testReleaseUnitTest --stacktrace`
-Expected: `BUILD SUCCESSFUL`，28 条测试全过（`ReEnablePolicyTest` 18 + `BandMatcherTest` 10）。
+类注释整块替换成：
 
-这一步能过的原因是：`ReEnableScheduler.schedule()` 的唯一调用方就是 `BandResetController.cycleBluetooth()`，Step 4 已经把它换掉了；而 `ReEnableReceiver.kt:26` 调的是 `BluetoothSwitch.enableIfOff()`，那个函数 Task 3 特意保留着，要到 Task 8 才删。
+```kotlin
+/**
+ * Entry point for `sendBroadcast` callers: Tasker, MacroDroid, Termux.
+ *
+ * Runs the fast phase inline under goAsync() rather than starting
+ * [ResetService], because Android 8+ forbids a background app from calling
+ * startService() and this receiver is always in the background. goAsync()
+ * only buys about ten seconds, so the scan is capped at 6s.
+ *
+ * The slow phase needs no help from here: [BandResetController] arms an alarm
+ * chain that the system delivers even if the process is reclaimed the moment
+ * goAsync() ends.
+ *
+ * Cannot prompt for permissions - there is no UI and Android 10+ blocks
+ * starting an Activity from the background. If the grant is missing it logs
+ * and gives up; launching the icon once is the only way to grant it.
+ *
+ * Left exported without a signature permission on purpose, so Tasker,
+ * MacroDroid and Termux can all trigger it. Worst case for an uninvited
+ * caller is one extra Bluetooth cycle.
+ */
+```
 
-如果这里报 `ReEnableScheduler` 或 `enableIfOff` 的 unresolved reference，说明 Step 1 或 Task 3 没按计划落地 —— 用 `grep -rn "schedule\|enableIfOff" app/src/main/` 定位，不要靠猜。
+（注释里的 `[ResetService]` 此刻还不存在，是个悬空 KDoc 链接。Kotlin 编译器不管这个，Task 9 会补上，push 之前一定已经解决。）
+
+调用点替换成：
+
+```kotlin
+        // applicationContext: the scan callback outlives onReceive.
+        val wantsToast = intent.getBooleanExtra(Notifier.EXTRA_TOAST, false)
+        BandResetController(context.applicationContext).run(
+            RECEIVER_SCAN_TIMEOUT_MS,
+            wantsToast
+        ) { result ->
+            Log.i(TAG, "result=$result")
+            if (result == BandResetController.Result.RESET_TRIGGERED) {
+                Log.i(TAG, "Bluetooth is turning off; the alarm chain will bring it back")
+            }
+            finishOnce()
+        }
+```
+
+`goAsync()`、`RECEIVER_SCAN_TIMEOUT_MS`、`GO_ASYNC_BACKSTOP_MS`、`finishOnce()`、`ACTION_RESET_IF_PRESENT` 全部不动。**绝不能在这里调 `startService`** —— Android 8+ 会抛 `IllegalStateException`。
+
+- [ ] **Step 5c: MainActivity 过渡桥接（不是完整重写，那在 Task 11）**
+
+只改三处，目的是让它编译过并且不再持有那个 3.5 秒人为延迟。
+
+类注释里"This Activity deliberately stays alive until Bluetooth has been turned back on..."那一段（v1 的第 18-22 行）替换成：
+
+```kotlin
+ * Re-enabling Bluetooth is owned by an alarm chain now, so this Activity no
+ * longer has to stay alive to protect an in-process timer. It reports as soon
+ * as the fast phase is done.
+```
+
+`runController()` 和 `onControllerResult()` 两个函数**合并成一个**，`onControllerResult` 整个删掉：
+
+```kotlin
+    private fun runController() {
+        // applicationContext, not `this`: the scan callback outlives this
+        // Activity.
+        BandResetController(applicationContext).run(
+            ACTIVITY_SCAN_TIMEOUT_MS,
+            wantsToast
+        ) { result -> report(result) }
+    }
+```
+
+companion 里删掉 `FINISH_GRACE_MS`（已无引用），保留 `ACTIVITY_SCAN_TIMEOUT_MS` 和 `TOAST_LINGER_MS`：
+
+```kotlin
+        const val ACTIVITY_SCAN_TIMEOUT_MS = 8_000L
+        private const val TOAST_LINGER_MS = 2_500L
+```
+
+`EXTRA_TOAST` 暂时留在 `MainActivity` 的 companion 里（值与 `Notifier.EXTRA_TOAST` 相同，都是 `"toast"`，所以行为一致）。Task 11 重写时会删掉它，统一用 `Notifier.EXTRA_TOAST`。
+
+- [ ] **Step 6: 编译 + 全量测试 + 不变量验证**
+
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" testReleaseUnitTest`
+Expected: `BUILD SUCCESSFUL`，无 warning，28 条测试全过（`ReEnablePolicyTest` 18 + `BandMatcherTest` 10）。
+
+再做两条不变量检查：
+
+```bash
+grep -rn "IN_PROCESS_DELAY_MS\|ALARM_DELAY_MS\|ReEnableScheduler.schedule" app/src/
+grep -rn "enableIfOff" app/src/
+```
+
+Expected：第一条**零命中**（两个进程内延迟常量已随重写消失）。第二条**恰好两处** —— `BluetoothSwitch.kt` 里的定义，加上 `ReEnableReceiver.kt` 里最后一个调用方。scheduler 里那个调用已经没了，所以从三处降到两处；Task 7 重写 Receiver 后就只剩定义，Task 8 删除。
+
+```bash
+grep -rn "armNextTick\|PendingResetStore.arm" app/src/main/java/
+```
+
+Expected：`armNextTick` 定义一处 + 调用一处（`BandResetController.cycleBluetooth()`），`PendingResetStore.arm` 调用一处，都在 `cycleBluetooth()` 里紧挨着。**布置闹钟的地方全项目只能有一个**，否则两条链会抢同一个电台。
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add app/src/main/java/com/blreay/bluetoothmonitor/ReEnableScheduler.kt app/src/main/java/com/blreay/bluetoothmonitor/BandResetController.kt
+git add app/src/main/java/com/blreay/bluetoothmonitor/ReEnableScheduler.kt \
+        app/src/main/java/com/blreay/bluetoothmonitor/BandResetController.kt \
+        app/src/main/java/com/blreay/bluetoothmonitor/TriggerReceiver.kt \
+        app/src/main/java/com/blreay/bluetoothmonitor/MainActivity.kt
 git commit -m "feat: hand re-enable to a per-second alarm chain
 
 ReEnableScheduler no longer posts anything to a Handler. It arms one exact
