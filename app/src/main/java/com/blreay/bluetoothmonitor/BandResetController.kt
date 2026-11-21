@@ -8,6 +8,7 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 
 /**
@@ -99,7 +100,7 @@ class BandResetController(private val context: Context) {
             val state = BluetoothSwitch.state(context)
             if (state != AdapterState.ON) {
                 Log.i(TAG, "Bluetooth is not ON (state=$state); exiting without doing anything")
-                emit(callback, wantsToast, Result.BLUETOOTH_OFF)
+                emit(callback, wantsToast, Result.BLUETOOTH_OFF, adapterState = state)
                 return
             }
             if (!BtPermissions.allGranted(context)) {
@@ -121,13 +122,27 @@ class BandResetController(private val context: Context) {
     }
 
     /**
-     * The single exit for every early return, so the debug toast and the
-     * callback cannot get out of step. [Session] has its own emit() because it
-     * also has to guard against reporting twice; the two differ by arity, so
-     * Kotlin resolves them unambiguously.
+     * The single exit for every path, so the debug toast, the run-result
+     * notification and the callback cannot get out of step. [Session] has its
+     * own one-argument emit() that adds the "have I already reported" guard and
+     * supplies the scan facts; the two differ by arity, so Kotlin resolves them
+     * unambiguously.
+     *
+     * The notification is unconditional here. It used to be that nothing at all
+     * was shown unless [Notifier.EXTRA_TOAST] was passed, which made six
+     * different failures indistinguishable from a working run.
      */
-    private fun emit(callback: Callback, wantsToast: Boolean, result: Result) {
+    private fun emit(
+        callback: Callback,
+        wantsToast: Boolean,
+        result: Result,
+        facts: RunReport.ScanFacts? = null,
+        matchedLabel: String? = null,
+        nearMissSample: String? = null,
+        adapterState: AdapterState? = null,
+    ) {
         Notifier.outcome(context, wantsToast, result.name)
+        RunNotification.fastPhase(context, result, facts, matchedLabel, nearMissSample, adapterState)
         callback.onResult(result)
     }
 
@@ -149,6 +164,21 @@ class BandResetController(private val context: Context) {
         private val handler = Handler(Looper.getMainLooper())
         private var settled = false
 
+        // --- what the scan actually observed, for the run-result notification.
+        // All of it is cheap to collect while the scan is running and
+        // impossible to reconstruct afterwards, which is the only reason it is
+        // collected at all. devicesSeen is the number that matters: zero means
+        // the system starved the scan, a healthy count means the scan worked
+        // and the band simply was not advertising.
+        private var windowMs = 0L
+        private var startedAtMs = 0L
+        private val seenAddresses = mutableSetOf<String>()
+        private var namedSeen = 0
+        private val nearMisses = mutableListOf<String>()
+        private var scanFailedCode: Int? = null
+        private var targetBonded = false
+        private var matchedLabel: String? = null
+
         private val onTimeout = Runnable {
             if (settled) return@Runnable
             Log.i(TAG, "scan window elapsed; band is not visible")
@@ -162,8 +192,11 @@ class BandResetController(private val context: Context) {
                 val mac = result.device?.address
                 val name = advertisedName(result)
                 Log.d(TAG, "seen $mac name=${name ?: "<none>"}")
-                if (!BandMatcher.isTarget(mac, name)) return
+                val isTarget = BandMatcher.isTarget(mac, name)
+                record(mac, name, isTarget)
+                if (!isTarget) return
                 Log.i(TAG, "band is visible: $mac name=${name ?: "<none>"}")
+                matchedLabel = if (name != null) "$name ($mac)" else (mac ?: "?")
                 teardown()
                 // Before disable(), so the message appears even when MIUI then
                 // refuses the toggle. It is also the moment the user asked to
@@ -181,15 +214,26 @@ class BandResetController(private val context: Context) {
                 if (settled) return
                 Log.e(TAG, "BLE scan failed errorCode=$errorCode")
                 if (errorCode == SCAN_FAILED_APPLICATION_REGISTRATION_FAILED) {
-                    Log.e(TAG, "registration failed - Android allows only 5 scans per 30s; " +
-                        "wait 30s and retry, this is throttling not a bug")
+                    // Scan client registration failed, i.e. too many scanners
+                    // system-wide. This is NOT the 5-starts-per-30s throttle:
+                    // the throttle never reaches this callback. The 6th
+                    // startScan in a 30s window is accepted and then silently
+                    // starved of results, so it surfaces as NOT_FOUND with
+                    // devicesSeen at zero, not as an error here.
+                    Log.e(TAG, "scan client registration failed; too many concurrent scanners system-wide")
                 }
+                scanFailedCode = errorCode
                 teardown()
                 emit(Result.ERROR)
             }
         }
 
         fun start(scanTimeoutMs: Long) {
+            // Recorded before startScan so that even a throwing startScan still
+            // reports a coherent set of facts rather than zeros.
+            windowMs = scanTimeoutMs
+            startedAtMs = SystemClock.elapsedRealtime()
+            targetBonded = isTargetBonded()
             try {
                 val settings = ScanSettings.Builder()
                     .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -226,6 +270,73 @@ class BandResetController(private val context: Context) {
             }
         }
 
+        /**
+         * Counts distinct devices and collects the ones that look band-shaped
+         * but did not match. A near miss is the most actionable thing a failed
+         * scan can report: it means the band was advertising and this build
+         * simply does not recognise the name or address it is using.
+         */
+        private fun record(mac: String?, name: String?, isTarget: Boolean) {
+            if (mac != null && seenAddresses.add(mac) && name != null) {
+                namedSeen++
+            }
+            if (isTarget || nearMisses.size >= NEAR_MISS_SAMPLE_LIMIT) return
+            if (looksLikeTarget(mac, name)) {
+                nearMisses.add(if (name != null) "$name ($mac)" else (mac ?: "?"))
+            }
+        }
+
+        /**
+         * Deliberately looser than [BandMatcher.isTarget]. The point is to
+         * notice a band that changed its advertised name or address, so this
+         * casts wider and lets the notification say what it actually saw.
+         */
+        private fun looksLikeTarget(mac: String?, name: String?): Boolean {
+            if (mac != null && mac.endsWith(BandMatcher.TARGET_MAC_SUFFIX, ignoreCase = true)) {
+                return true
+            }
+            if (name == null) return false
+            return NEAR_MISS_NAME_HINTS.any { name.contains(it, ignoreCase = true) }
+        }
+
+        /**
+         * Whether the target is in the paired-device list. This is where a user
+         * "sees" the band in system settings, and it is not the same thing as a
+         * BLE advertisement: a band that is bonded and connected to Mi Fitness
+         * has stopped advertising, so bonded plus not-seen is the expected
+         * combination rather than a fault.
+         */
+        private fun isTargetBonded(): Boolean = try {
+            @Suppress("MissingPermission")
+            adapter.bondedDevices?.any { device ->
+                val name = try {
+                    device.name
+                } catch (t: Throwable) {
+                    null
+                }
+                BandMatcher.isTarget(device.address, name)
+            } ?: false
+        } catch (t: Throwable) {
+            Log.w(TAG, "bondedDevices threw", t)
+            false
+        }
+
+        private fun facts() = RunReport.ScanFacts(
+            windowMs = windowMs,
+            // elapsedRealtime, not currentTimeMillis: monotonic, so a clock
+            // adjustment mid-scan cannot make this negative or absurd.
+            elapsedMs = if (startedAtMs == 0L) 0L else SystemClock.elapsedRealtime() - startedAtMs,
+            devicesSeen = seenAddresses.size,
+            namedSeen = namedSeen,
+            nearMisses = nearMisses.size,
+            targetBonded = targetBonded,
+            scanFailedCode = scanFailedCode,
+        )
+
+        /** Capped at [NEAR_MISS_SAMPLE_LIMIT] entries so the notification stays readable. */
+        private fun nearMissSample(): String? =
+            if (nearMisses.isEmpty()) null else nearMisses.joinToString("、")
+
         private fun teardown() {
             handler.removeCallbacks(onTimeout)
             try {
@@ -258,8 +369,18 @@ class BandResetController(private val context: Context) {
         private fun emit(result: Result) {
             if (settled) return
             settled = true
-            Notifier.outcome(context, wantsToast, result.name)
-            callback.onResult(result)
+            // Delegates to the controller's emit so the toast, the notification
+            // and the callback cannot drift apart. All this one adds is the
+            // guard against reporting twice and the facts this session
+            // collected, which the controller-level early returns do not have.
+            emit(
+                callback,
+                wantsToast,
+                result,
+                facts = facts(),
+                matchedLabel = matchedLabel,
+                nearMissSample = nearMissSample(),
+            )
         }
     }
 
@@ -268,5 +389,14 @@ class BandResetController(private val context: Context) {
 
         /** Mirrors ScanCallback.SCAN_FAILED_APPLICATION_REGISTRATION_FAILED. */
         private const val SCAN_FAILED_APPLICATION_REGISTRATION_FAILED = 2
+
+        /** How many near-miss devices to name in the notification. */
+        private const val NEAR_MISS_SAMPLE_LIMIT = 3
+
+        /**
+         * Substrings suggesting a Xiaomi band, without requiring the exact
+         * match [BandMatcher] demands. Used only to report near misses.
+         */
+        private val NEAR_MISS_NAME_HINTS = listOf("Xiaomi", "Band", "Mi Smart")
     }
 }

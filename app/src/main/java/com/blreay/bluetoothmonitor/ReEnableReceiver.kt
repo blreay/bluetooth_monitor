@@ -55,9 +55,17 @@ class ReEnableReceiver : BroadcastReceiver() {
                 val adapter = BluetoothSwitch.adapter(app)
                 if (adapter == null) {
                     // state() would have returned UNKNOWN and the policy would
-                    // have given up, so this is a race, not a path. Bail safely.
+                    // have given up, so this is a race, not a path. Bail safely,
+                    // and report it as the give-up it effectively is: with no
+                    // adapter the chain cannot continue, and ENABLE_AND_RETRY
+                    // deliberately renders no notification of its own.
                     Log.e(TAG, "adapter vanished between state() and enable(); terminating")
-                    terminate(app, pending.wantsToast, action)
+                    terminate(
+                        app,
+                        pending.wantsToast,
+                        ReEnablePolicy.Action.GIVE_UP_NO_ADAPTER,
+                        nextAttempts,
+                    )
                     return
                 }
                 // The return value is logged by BluetoothSwitch and then
@@ -81,7 +89,7 @@ class ReEnableReceiver : BroadcastReceiver() {
             ReEnablePolicy.Action.DONE_RESTORED -> {
                 Log.i(TAG, "Bluetooth is back on after $nextAttempts tick(s)")
                 Notifier.bluetoothRestored(app)
-                terminate(app, pending.wantsToast, action)
+                terminate(app, pending.wantsToast, action, nextAttempts)
             }
 
             ReEnablePolicy.Action.GIVE_UP_NO_ADAPTER,
@@ -101,14 +109,27 @@ class ReEnableReceiver : BroadcastReceiver() {
                             ""
                         }
                 )
-                terminate(app, pending.wantsToast, action)
+                terminate(app, pending.wantsToast, action, nextAttempts)
             }
         }
     }
 
-    /** Clears the store and cancels the chain, then reports if asked to. */
-    private fun terminate(context: Context, wantsToast: Boolean, action: ReEnablePolicy.Action) {
+    /**
+     * Clears the store and cancels the chain, then reports.
+     *
+     * The notification is unconditional; the toast still honours the debug flag.
+     * This is the only place the slow phase reports anything, which is why both
+     * give-up families and the success all route through here - a terminal path
+     * that skipped it would leave Bluetooth off with nothing on screen to say so.
+     */
+    private fun terminate(
+        context: Context,
+        wantsToast: Boolean,
+        action: ReEnablePolicy.Action,
+        attempts: Int,
+    ) {
         Notifier.outcome(context, wantsToast, action.name)
+        RunNotification.slowPhase(context, action, attempts)
         PendingResetStore.clear(context)
         ReEnableScheduler.cancel(context)
     }
