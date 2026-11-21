@@ -8,12 +8,16 @@ import android.os.Looper
 import android.util.Log
 
 /**
- * Entry point for `sendBroadcast` callers.
+ * Entry point for `sendBroadcast` callers: Tasker, MacroDroid, Termux.
  *
- * goAsync() only buys about ten seconds and the full flow can take fifteen,
- * so this receiver caps the scan at 6s and never waits for the re-enable
- * itself: [ReEnableScheduler] hands that to a system exact alarm which fires
- * even if the process is reclaimed the moment goAsync() ends.
+ * Runs the fast phase inline under goAsync() rather than starting
+ * [ResetService], because Android 8+ forbids a background app from calling
+ * startService() and this receiver is always in the background. goAsync()
+ * only buys about ten seconds, so the scan is capped at 6s.
+ *
+ * The slow phase needs no help from here: [BandResetController] arms an alarm
+ * chain that the system delivers even if the process is reclaimed the moment
+ * goAsync() ends.
  *
  * Cannot prompt for permissions - there is no UI and Android 10+ blocks
  * starting an Activity from the background. If the grant is missing it logs
@@ -52,10 +56,14 @@ class TriggerReceiver : BroadcastReceiver() {
         handler.postDelayed({ finishOnce() }, GO_ASYNC_BACKSTOP_MS)
 
         // applicationContext: the scan callback outlives onReceive.
-        BandResetController(context.applicationContext).run(RECEIVER_SCAN_TIMEOUT_MS) { result ->
+        val wantsToast = intent.getBooleanExtra(Notifier.EXTRA_TOAST, false)
+        BandResetController(context.applicationContext).run(
+            RECEIVER_SCAN_TIMEOUT_MS,
+            wantsToast
+        ) { result ->
             Log.i(TAG, "result=$result")
             if (result == BandResetController.Result.RESET_TRIGGERED) {
-                Log.i(TAG, "Bluetooth is off; the exact alarm will turn it back on")
+                Log.i(TAG, "Bluetooth is turning off; the alarm chain will bring it back")
             }
             finishOnce()
         }

@@ -4,82 +4,93 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import android.os.Handler
 import android.util.Log
 
 /**
- * Arranges for Bluetooth to be switched back on after
- * [BandResetController] has turned it off.
+ * Arms one tick of the re-enable chain.
  *
- * Two mechanisms are scheduled at once, deliberately:
+ * A chain rather than a single delayed callback, because the thing being
+ * waited for has no predictable duration: MIUI shows a permission dialog
+ * before the radio even starts turning off, and then gracefully tears down
+ * every Bluetooth connection. v1 guessed 3 seconds, called enable() while
+ * the state was still TURNING_OFF, and the framework rejected it.
  *
- *  - an in-process [Handler] delay, which is precise and works while the
- *    calling Activity is still alive;
- *  - an exact alarm delivered by the system, which still fires when MIUI has
- *    reclaimed the process during the wait.
+ * Each tick re-reads the state via [ReEnableReceiver] and re-arms itself
+ * until [ReEnablePolicy] says stop. Nothing here knows how long Bluetooth
+ * takes to turn off, and that is the point.
  *
- * [BluetoothSwitch.enableIfOff] is idempotent, so whichever fires first wins
- * and the other is a harmless no-op.
- *
- * The broadcast path relies on the alarm alone: once goAsync() ends the
- * process can be reclaimed at any moment, taking the Handler with it.
+ * The chain lives entirely in AlarmManager plus [PendingResetStore]. There
+ * is no in-process timer any more: a Handler callback dies with the process,
+ * and MIUI reclaims this one readily.
  */
 object ReEnableScheduler {
 
-    /** Delay for the in-process fast path. This is the spec's "wait 3 seconds". */
-    const val IN_PROCESS_DELAY_MS = 3_000L
-
     /**
-     * Delay for the system alarm. Slightly later than the in-process path so
-     * the precise one normally wins the race.
+     * One second per tick. With [ReEnablePolicy.MAX_ATTEMPTS] that is a two
+     * minute ceiling - long enough for a human to read and tap the MIUI
+     * dialog, short enough that a stuck chain stops by itself.
      */
-    const val ALARM_DELAY_MS = 3_500L
+    const val TICK_INTERVAL_MS = 1_000L
 
     private const val TAG = "BtReset.Sched"
     private const val REQUEST_CODE = 1
 
     /**
+     * Arms the next tick. Called once to start the chain and then once per
+     * tick to continue it.
+     *
+     * Deliberately logs nothing on success: [ReEnableReceiver] already logs
+     * every tick it receives, so a chain that stops arming is visible as a
+     * gap in those logs. Logging here too would add a line per second.
+     *
      * @param context must be an application context - the PendingIntent and
-     *                the posted Runnable both outlive the caller
-     * @param handler main-looper handler owned by the caller's session
+     *                the alarm both outlive the caller.
      */
-    fun schedule(context: Context, handler: Handler) {
-        handler.postDelayed({
-            Log.i(TAG, "in-process re-enable firing")
-            BluetoothSwitch.enableIfOff(context)
-        }, IN_PROCESS_DELAY_MS)
-
+    fun armNextTick(context: Context) {
         val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
         if (am == null) {
-            Log.w(TAG, "AlarmManager unavailable; only the in-process path can re-enable Bluetooth")
+            // Fatal for the slow phase: nothing else can re-enable Bluetooth.
+            Log.e(TAG, "AlarmManager unavailable; Bluetooth will stay OFF and needs a manual toggle")
             return
         }
 
-        val triggerAt = System.currentTimeMillis() + ALARM_DELAY_MS
-        val pending = reEnablePendingIntent(context)
+        val triggerAt = System.currentTimeMillis() + TICK_INTERVAL_MS
+        val pending = tickPendingIntent(context)
 
         if (am.canScheduleExactAlarms()) {
-            am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending)
-            Log.i(TAG, "exact alarm set for +${ALARM_DELAY_MS}ms")
+            // setExact, NOT setExactAndAllowWhileIdle: the latter is throttled
+            // to roughly one firing per 9 seconds while idle, which would
+            // stretch a 1s retry chain into something unusable. The screen is
+            // on and the user just triggered this, so Doze is not a concern.
+            am.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pending)
         } else {
             // SCHEDULE_EXACT_ALARM is granted by default at targetSdk 32, so
-            // this should not happen. If it does, the broadcast path is at
-            // risk of leaving Bluetooth off, and the log says so loudly.
+            // this should not happen. If it does the chain still runs, just
+            // coarsely, and Bluetooth may stay off longer than two minutes.
             am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending)
             Log.e(
                 TAG,
-                "exact alarms not permitted; inexact alarm may fire minutes late - " +
-                    "Bluetooth could stay OFF if this process is killed"
+                "exact alarms not permitted; ticks will be inexact - " +
+                    "Bluetooth may stay OFF longer than the two minute ceiling"
             )
         }
     }
 
-    // No cancel() on purpose. The flow never schedules a re-enable unless
-    // disable() returned true, and FLAG_UPDATE_CURRENT with a fixed
-    // REQUEST_CODE means a second run simply replaces the first alarm.
-    private fun reEnablePendingIntent(context: Context): PendingIntent {
+    /**
+     * Cancels any armed tick. Every terminal path - success and all three
+     * give-ups - must call this, otherwise a stale alarm fires later and
+     * finds nothing in the store.
+     */
+    fun cancel(context: Context) {
+        val am = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        am.cancel(tickPendingIntent(context))
+        Log.i(TAG, "chain cancelled")
+    }
+
+    private fun tickPendingIntent(context: Context): PendingIntent {
         // Explicit intent to the class: exempt from the Android 8+ ban on
-        // implicit broadcasts to manifest-declared receivers.
+        // implicit broadcasts to manifest-declared receivers, and it lets the
+        // system start the process to deliver the tick after MIUI reclaimed it.
         val intent = Intent(context, ReEnableReceiver::class.java)
             .setAction(ReEnableReceiver.ACTION_REENABLE)
         return PendingIntent.getBroadcast(
@@ -87,6 +98,8 @@ object ReEnableScheduler {
             REQUEST_CODE,
             intent,
             // FLAG_IMMUTABLE is mandatory on API 31+, which is our minSdk.
+            // FLAG_UPDATE_CURRENT makes re-arming replace the previous tick
+            // instead of stacking, so at most one alarm is ever pending.
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
     }

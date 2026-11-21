@@ -11,30 +11,39 @@ import android.os.Looper
 import android.util.Log
 
 /**
- * The entire point of the app: find the band, then cycle Bluetooth.
+ * The fast phase: find the band, then turn Bluetooth off and hand the
+ * turning-back-on to the alarm chain.
  *
- * Deliberately free of any UI dependency so [MainActivity] and
+ * Deliberately free of any UI dependency so [ResetService] and
  * [TriggerReceiver] share one implementation and cannot drift apart. The
- * caller supplies the scan window: the Activity can afford 8s, the broadcast
+ * caller supplies the scan window: the Service can afford 8s, the broadcast
  * receiver must fit inside goAsync()'s ~10s budget and uses 6s.
  *
  * Callback contract: [Callback.onResult] fires exactly once and means "the
- * decision phase is finished". For [Result.RESET_TRIGGERED] it does NOT mean
- * Bluetooth is back on yet - the caller must stay alive for
- * [ReEnableScheduler.IN_PROCESS_DELAY_MS] to let the in-process path run,
- * otherwise the process loses foreground priority and MIUI may reclaim it
- * mid-wait. [MainActivity] does this; [TriggerReceiver] cannot, and relies on
- * the alarm instead.
+ * fast phase is finished". For [Result.RESET_TRIGGERED] it does NOT mean
+ * Bluetooth is off yet, and it certainly does not mean it is back on -
+ * disable() only begins the transition. The caller should stop itself
+ * immediately; the slow phase is owned by [ReEnableReceiver] and survives
+ * this process dying.
+ *
+ * v1 told callers to stay alive for 3.5s here to protect an in-process
+ * re-enable timer. That is gone, and with it the reason the launcher
+ * Activity had to hold input focus while the user was looking at their home
+ * screen.
  */
-// `context` must be an application context: the scan callback and the
-// re-enable Runnable both outlive whichever caller supplied it.
+// `context` must be an application context: the scan callback outlives
+// whichever caller supplied it.
 class BandResetController(private val context: Context) {
 
     enum class Result {
         /** This device has no Bluetooth radio. */
         NO_ADAPTER,
 
-        /** Bluetooth was already off. Per spec, do nothing and exit. */
+        /**
+         * Bluetooth was not in STATE_ON, so there was nothing to reset. Covers
+         * OFF as well as TURNING_OFF / TURNING_ON: starting a cycle against a
+         * radio that is mid-transition is what produced v1's stuck-off bug.
+         */
         BLUETOOTH_OFF,
 
         /** A Nearby-devices runtime permission is not granted. */
@@ -49,7 +58,11 @@ class BandResetController(private val context: Context) {
          */
         DISABLE_FAILED,
 
-        /** Band found, Bluetooth turned off, re-enable scheduled two ways. */
+        /**
+         * Band found, disable() accepted, alarm chain armed. This says nothing
+         * about the radio's state right now - it is almost certainly still
+         * TURNING_OFF. [ReEnableReceiver] owns the outcome from here.
+         */
         RESET_TRIGGERED,
 
         /** Something unexpected threw. Details are in logcat. */
@@ -61,52 +74,76 @@ class BandResetController(private val context: Context) {
     }
 
     /**
-     * Starts the flow. Returns immediately; the outcome arrives on
+     * Starts the fast phase. Returns immediately; the outcome arrives on
      * [callback], on the main thread, exactly once.
      *
      * @param scanTimeoutMs how long to scan before reporting NOT_FOUND. The
-     *        Activity can afford 8s; the broadcast receiver must fit inside
+     *        Service can afford 8s; the broadcast receiver must fit inside
      *        goAsync()'s ~10s budget and uses 6s.
+     * @param wantsToast the debug flag from [Notifier.EXTRA_TOAST]. Passed in
+     *        rather than read from an Intent so both entry points behave
+     *        identically and neither has to know how the other was invoked.
      */
-    fun run(scanTimeoutMs: Long, callback: Callback) {
+    fun run(scanTimeoutMs: Long, wantsToast: Boolean, callback: Callback) {
         try {
             val adapter = BluetoothSwitch.adapter(context)
             if (adapter == null) {
                 Log.e(TAG, "no BluetoothAdapter; this device has no Bluetooth radio")
-                callback.onResult(Result.NO_ADAPTER)
+                emit(callback, wantsToast, Result.NO_ADAPTER)
                 return
             }
-            if (!adapter.isEnabled) {
-                Log.i(TAG, "Bluetooth is off; exiting without doing anything")
-                callback.onResult(Result.BLUETOOTH_OFF)
+            // state, not isEnabled. isEnabled is documented as
+            // getState() == STATE_ON, so it is false during TURNING_OFF and
+            // TURNING_ON too - which would let a second tap on the launcher
+            // icon start a second cycle against a radio that is mid-transition.
+            val state = BluetoothSwitch.state(context)
+            if (state != AdapterState.ON) {
+                Log.i(TAG, "Bluetooth is not ON (state=$state); exiting without doing anything")
+                emit(callback, wantsToast, Result.BLUETOOTH_OFF)
                 return
             }
             if (!BtPermissions.allGranted(context)) {
                 Log.w(TAG, "missing permission(s) ${BtPermissions.missing(context)}; cannot scan")
-                callback.onResult(Result.NEEDS_PERMISSION)
+                emit(callback, wantsToast, Result.NEEDS_PERMISSION)
                 return
             }
             val scanner = adapter.bluetoothLeScanner
             if (scanner == null) {
-                Log.e(TAG, "BluetoothLeScanner is null even though Bluetooth reports enabled")
-                callback.onResult(Result.ERROR)
+                Log.e(TAG, "BluetoothLeScanner is null even though Bluetooth reports ON")
+                emit(callback, wantsToast, Result.ERROR)
                 return
             }
-            Session(adapter, scanner, callback).start(scanTimeoutMs)
+            Session(adapter, scanner, wantsToast, callback).start(scanTimeoutMs)
         } catch (t: Throwable) {
             Log.e(TAG, "controller failed before scanning", t)
-            callback.onResult(Result.ERROR)
+            emit(callback, wantsToast, Result.ERROR)
         }
+    }
+
+    /**
+     * The single exit for every early return, so the debug toast and the
+     * callback cannot get out of step. [Session] has its own emit() because it
+     * also has to guard against reporting twice; the two differ by arity, so
+     * Kotlin resolves them unambiguously.
+     */
+    private fun emit(callback: Callback, wantsToast: Boolean, result: Result) {
+        Notifier.outcome(context, wantsToast, result.name)
+        callback.onResult(result)
     }
 
     /**
      * One scan-and-cycle attempt. Holds the mutable "have I already reported
      * a result" state so the timeout, the scan callback and a scan failure
      * cannot race into reporting twice.
+     *
+     * The Handler here is for the scan timeout only. v1 also used it to post
+     * the re-enable; that is what made the launcher Activity hold input focus
+     * for seconds, and it is gone.
      */
     private inner class Session(
         private val adapter: BluetoothAdapter,
         private val scanner: BluetoothLeScanner,
+        private val wantsToast: Boolean,
         private val callback: Callback,
     ) {
         private val handler = Handler(Looper.getMainLooper())
@@ -128,6 +165,10 @@ class BandResetController(private val context: Context) {
                 if (!BandMatcher.isTarget(mac, name)) return
                 Log.i(TAG, "band is visible: $mac name=${name ?: "<none>"}")
                 teardown()
+                // Before disable(), so the message appears even when MIUI then
+                // refuses the toggle. It is also the moment the user asked to
+                // be told about.
+                Notifier.bandFound(context)
                 cycleBluetooth()
             }
 
@@ -197,21 +238,27 @@ class BandResetController(private val context: Context) {
 
         private fun cycleBluetooth() {
             if (!BluetoothSwitch.disable(adapter)) {
-                // Bluetooth never went off, so nothing must be scheduled.
-                // Scheduling a re-enable here would be a no-op at best and
-                // would mask the real failure at worst.
+                // Bluetooth never began turning off, so nothing must be armed.
+                // Arming a chain here would eventually enable() a radio that
+                // was already on.
                 Log.e(TAG, "system refused to turn Bluetooth off; leaving it ON and exiting")
                 emit(Result.DISABLE_FAILED)
                 return
             }
-            Log.i(TAG, "Bluetooth is now off; re-enable scheduled two ways")
-            ReEnableScheduler.schedule(context, handler)
+            // disable() returning true means the transition has BEGUN. The
+            // radio is almost certainly still in STATE_TURNING_OFF right now,
+            // and calling enable() here is exactly what broke v1. Arm the
+            // chain and let it wait for a real STATE_OFF.
+            Log.i(TAG, "disable() accepted; arming the state-driven re-enable chain")
+            PendingResetStore.arm(context, wantsToast)
+            ReEnableScheduler.armNextTick(context)
             emit(Result.RESET_TRIGGERED)
         }
 
         private fun emit(result: Result) {
             if (settled) return
             settled = true
+            Notifier.outcome(context, wantsToast, result.name)
             callback.onResult(result)
         }
     }

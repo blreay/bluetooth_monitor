@@ -15,11 +15,9 @@ import android.widget.Toast
  * The theme is translucent rather than NoDisplay because NoDisplay requires
  * finish() before onResume(), which would abort the ~12s flow.
  *
- * This Activity deliberately stays alive until Bluetooth has been turned back
- * on. Finishing immediately after disable() would drop the process out of the
- * foreground and let MIUI reclaim it during the 3s wait, taking the
- * in-process re-enable timer down with it and leaving Bluetooth off. The
- * exact alarm would still recover it, but the precise path is worth keeping.
+ * Re-enabling Bluetooth is owned by an alarm chain now, so this Activity no
+ * longer has to stay alive to protect an in-process timer. It reports as soon
+ * as the fast phase is done.
  *
  * Extends android.app.Activity, not AppCompatActivity: there is no UI, and
  * the app has no androidx dependencies at all.
@@ -65,24 +63,12 @@ class MainActivity : Activity() {
     }
 
     private fun runController() {
-        // applicationContext, not `this`: the scan callback and the re-enable
-        // Runnable both outlive this Activity.
+        // applicationContext, not `this`: the scan callback outlives this
+        // Activity.
         BandResetController(applicationContext).run(
-            ACTIVITY_SCAN_TIMEOUT_MS
-        ) { result -> onControllerResult(result) }
-    }
-
-    private fun onControllerResult(result: BandResetController.Result) {
-        if (result == BandResetController.Result.RESET_TRIGGERED) {
-            // Hold foreground priority until the in-process re-enable has
-            // fired. See the class comment for why this matters.
-            handler.postDelayed(
-                { report(result) },
-                ReEnableScheduler.IN_PROCESS_DELAY_MS + FINISH_GRACE_MS
-            )
-        } else {
-            report(result)
-        }
+            ACTIVITY_SCAN_TIMEOUT_MS,
+            wantsToast
+        ) { result -> report(result) }
     }
 
     private fun report(result: BandResetController.Result) {
@@ -111,7 +97,6 @@ class MainActivity : Activity() {
         // action launched it, so a constant would be dead code.
 
         const val ACTIVITY_SCAN_TIMEOUT_MS = 8_000L
-        private const val FINISH_GRACE_MS = 500L
         private const val TOAST_LINGER_MS = 2_500L
     }
 }
