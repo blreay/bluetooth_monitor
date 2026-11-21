@@ -7,6 +7,8 @@
 3. 找到了 → 屏幕上闪一行「已找到手环，正在重启蓝牙…」，关闭蓝牙，**等它真的关完**再打开，确认开起来了再退出
 4. 没找到 → 直接退出
 
+**每次运行都会在通知栏留一条结果**，不管找到没找到、成功还是失败。见[看运行结果](#看运行结果)。
+
 判定"找到"只看 **BLE 扫描结果**，不要求已连接。
 
 点图标时**不会有任何窗口**，桌面全程可以正常点击滑动。
@@ -25,7 +27,8 @@ https://github.com/blreay/bluetooth_monitor/releases/download/latest/bt-reset.ap
 
 1. 点桌面图标 **蓝牙重启**
 2. 系统弹出"允许访问附近的设备？" → **允许**
-3. 之后点图标**不会出现任何窗口**。真的动手做了事的时候会闪两行提示（各约 2 秒自动消失）：命中手环时一行、蓝牙恢复时一行。没命中手环就什么都不显示
+3. 系统可能再弹一个"允许发送通知？" → **允许**。拒绝也能用，只是通知退化成 Toast
+4. 之后点图标**不会出现任何窗口**。每次运行的结果都在通知栏里；命中手环和蓝牙恢复这两件事还会各闪一行 Toast（约 2 秒自动消失）
 
 ## MIUI / HyperOS 必做配置
 
@@ -70,16 +73,31 @@ adb shell am broadcast -a com.blreay.bluetoothmonitor.action.RESET_IF_PRESENT
 
 广播路径的扫描窗口是 6 秒（前三种走 Service 的路径是 8 秒），因为 `goAsync()` 只有约 10 秒预算。
 
-## 调试
+## 看运行结果
 
-**命中手环和蓝牙恢复这两条消息是默认就显示的**，不用加任何参数：
+**每次运行都会发一条通知**，不管有没有找到手环、成功还是失败。这是不接电脑时主要的诊断手段。
 
-- `已找到手环，正在重启蓝牙…` —— 扫到手环的那一刻，约 2 秒自动消失
-- `蓝牙已恢复` —— 确认蓝牙真的重新开起来了
+通知走「运行结果」渠道，是静默的（不响铃、不弹横幅），只在通知栏和状态栏留一个图标。第二次运行覆盖第一次，不会堆一屏。
 
-这两条就是你不接电脑时的诊断手段。看到第一条没看到第二条，说明重开失败，去看下面的日志表。
+正文固定带一行扫描事实：
 
-**想看每一个结局**（包括"没找到""蓝牙本来就没开""放弃了"），加一个 extra：
+```
+扫描 8.0/8.0 秒 · 看到 14 个设备（9 个带广播名）
+```
+
+**这行数字就是判断依据**，因为两种故障在屏幕上长得一模一样，只有设备数能分开：
+
+| 通知里看到 | 说明 |
+|---|---|
+| 一个设备都没扫到 | 多半被系统限流了。Android 每 30 秒只放行 5 次扫描，**超了之后静默不给结果、也不报错**。反复点图标测试必撞，等 30 秒再点 |
+| 扫到十几个设备，但没有目标 | 扫描本身是好的，手环没在广播 —— 它多半正连着手机 |
+| 扫描只跑了一两秒就结束 | 进程被系统杀了，去设「省电策略 = 无限制」 |
+| 看到疑似手环但没匹配上 | 手环换了广播名，通知里会写它实际叫什么，据此改 `BandMatcher.kt` |
+| **完全没有任何通知** | 进程在发通知之前就死了，或者通知权限被关了 |
+
+命中手环和蓝牙恢复这两件事**另外**还会各弹一条 Toast（约 2 秒自动消失），也是无条件的。看到第一条没看到第二条，说明重开失败。
+
+**想让每一个结局都弹 Toast**（包括"没找到""蓝牙本来就没开"），加一个 extra：
 
 ```bash
 adb shell am start -n com.blreay.bluetoothmonitor/.MainActivity --ez toast true
@@ -89,7 +107,7 @@ adb shell am broadcast -a com.blreay.bluetoothmonitor.action.RESET_IF_PRESENT --
 **接电脑看日志**：
 
 ```bash
-adb logcat -s BtReset.Main BtReset.Perm BtReset.Svc BtReset.Trigger BtReset.Ctrl BtReset.Switch BtReset.Sched BtReset.Store BtReset.ReEnable BtReset.Notify
+adb logcat -s BtReset.Main BtReset.Perm BtReset.Svc BtReset.Trigger BtReset.Ctrl BtReset.Switch BtReset.Sched BtReset.Store BtReset.ReEnable BtReset.Notify BtReset.Notif
 ```
 
 日志含义：
@@ -110,13 +128,17 @@ adb logcat -s BtReset.Main BtReset.Perm BtReset.Svc BtReset.Trigger BtReset.Ctrl
 | `giving up (GIVE_UP_NEVER_TURNED_OFF) ...` | 2 分钟内蓝牙一直没关成。通常是 MIUI 弹框你点了拒绝，或没设"开关蓝牙"权限。**蓝牙还开着，没坏** |
 | `giving up (GIVE_UP_NEVER_TURNED_BACK_ON) ...` | **蓝牙关掉了但没能开回来，需要手动开一次**。看前面 `enable()` 的日志判断是被谁拒的 |
 | `exact alarms not permitted` | 闹钟降级为非精确，重开会变慢 |
-| `BLE scan failed errorCode=2` | 触发了扫描节流，见下 |
+| `BLE scan failed errorCode=2` | **扫描客户端注册失败**，全系统同时扫描的应用太多了。这**不是**限流 —— 限流根本不会走到这个回调，见下 |
+| `posted: <标题>` | 通知发出去了 |
+| `notifications disabled; falling back to a toast` | 通知权限被关了，改用 Toast 兜底 |
 
 ## 三个已知限制
 
-**1. 手环已连接时扫不到。** BLE 外设连接后就停止广播。所以手环正常连着的时候这个工具不会有任何动作 —— 这是设计如此。它的用途是手环掉线但在附近时，强制重启蓝牙让 Mi Fitness 重连。
+**1. 手环已连接时扫不到 —— 而"设置里能看到"不等于"在广播"。** BLE 外设一旦连上就停止广播。设置 → 蓝牙里那个列表是**已配对设备**，配对记录存在本机，跟手环此刻有没有在发广播是两回事。所以你在设置里明明看得到它、扫描却扫不到，是正常现象，不是 bug。通知里会直接写明手环在不在已配对列表里。它的用途是手环掉线但在附近时，强制重启蓝牙让 Mi Fitness 重连。
 
-**2. Android 限制每 30 秒最多 5 次 BLE 扫描。** 超了之后系统会静默禁扫 30 秒，日志里是 `BLE scan failed errorCode=2`。反复点图标测试时撞上"扫不到"，很可能不是 bug，等 30 秒再试。
+**2. Android 限制每 30 秒最多 5 次 BLE 扫描，而且超限时是完全静默的。** 第 6 次 `startScan` 会被正常接受、不抛异常、**不回调 `onScanFailed`**，然后拿不到任何结果。表现就是"扫了 8 秒，一个设备都没看到"。反复点图标测试必然撞上，等 30 秒再点即可 —— 通知里的设备数为 0 就是这个情况。
+
+（`BLE scan failed errorCode=2` 是另一码事：扫描客户端注册失败，说明全系统同时在扫描的应用太多，跟限流无关。）
 
 **3. `targetSdk` 被故意钉在 32。** Android 13 起，targetSdk ≥ 33 的应用调用 `BluetoothAdapter.enable()/disable()` 一律返回 `false`。这个限制按 targetSdkVersion 而非系统版本判定，所以钉在 32 是让"程序化关蓝牙"在 Android 13/14/15/16 上继续可用的唯一办法 —— Tasker 的 `TaskerSettings` 和 MacroDroid 的 Helper App 用的是同一手法。
 
