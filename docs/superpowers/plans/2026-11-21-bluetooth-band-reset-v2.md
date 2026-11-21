@@ -17,10 +17,16 @@
 **每条 Bash 命令都要先 source 构建环境。** 这个会话的 shell 状态不跨调用保留，JDK 和 Android SDK 都不在默认 PATH 上：
 
 ```bash
-source ~/.cache/btreset-build/env.sh && ./gradlew <task>
+source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" <task>
 ```
 
 `env.sh` 导出 `JAVA_HOME`（jdk17）、`ANDROID_HOME` / `ANDROID_SDK_ROOT`（platform 34 + build-tools 34.0.0）、`BTRESET_GRADLE`、`PATH`。
+
+**用 `"$BTRESET_GRADLE"`，不要用 `./gradlew`。** 已实测踩过：`./gradlew` 会去校验 wrapper 发行版，而 `~/.gradle/wrapper/dists/gradle-8.7-bin/` 下有两个条目 —— `anc4mv9t277pws4qhs0gnw9pj` 是好的（有 `.ok` 标记），`bhs2wmbdwecv87pi65oeuq5iu` 是一次失败下载留下的（只有 `.zip.part` 和 `.lck`）。wrapper 挑中了坏的那个，然后去 `services.gradle.org` 重新下载，本机无外网，直接 `BUILD FAILED` 在 `org.gradle.wrapper.Install.forceFetch`。
+
+`$BTRESET_GRADLE` 指向 `~/.cache/btreset-build/gradle-8.7/bin/gradle`，版本与 `gradle-wrapper.properties` 里的 `gradle-8.7-bin.zip` 完全一致，所以构建产物没有区别。
+
+**不要为此去改 `gradle/wrapper/gradle-wrapper.properties` 或 `gradlew`。** CI 用的就是 `./gradlew`，GitHub runner 有外网，已经连绿三次。改坏了就是拿本地便利换线上失败。
 
 **Kotlin 的 TDD "RED" 是编译失败，不是断言失败。** 测试引用一个还不存在的类时，Gradle 报的是 `unresolved reference: Xxx` 然后 `BUILD FAILED`。这是预期的 RED，不要误当成环境坏了。
 
@@ -105,7 +111,7 @@ enum class AdapterState {
 
 - [ ] **Step 2: 编译验证**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew compileReleaseKotlin --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" compileReleaseKotlin --stacktrace`
 Expected: `BUILD SUCCESSFUL`，无 warning
 
 - [ ] **Step 3: 把 spec 改成一致**
@@ -321,7 +327,7 @@ class ReEnablePolicyTest {
 
 - [ ] **Step 2: 跑测试确认 RED**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew testReleaseUnitTest --tests '*ReEnablePolicyTest*' --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" testReleaseUnitTest --tests '*ReEnablePolicyTest*' --stacktrace`
 Expected: `BUILD FAILED`，报错含 `unresolved reference: ReEnablePolicy`（Kotlin 的 RED 是编译失败，见"执行前必读"）
 
 - [ ] **Step 3: 写实现**
@@ -410,7 +416,7 @@ object ReEnablePolicy {
 
 - [ ] **Step 4: 跑测试确认 GREEN，且 BandMatcher 没被带坏**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew testReleaseUnitTest --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" testReleaseUnitTest --stacktrace`
 Expected: `BUILD SUCCESSFUL`。检查 `app/build/test-results/testReleaseUnitTest/`：
 - `TEST-com.blreay.bluetoothmonitor.ReEnablePolicyTest.xml` → `tests="18" skipped="0" failures="0" errors="0"`
 - `TEST-com.blreay.bluetoothmonitor.BandMatcherTest.xml` → `tests="10" skipped="0" failures="0" errors="0"`
@@ -547,7 +553,7 @@ import 不用动：`AdapterState` 和 `ReEnablePolicy` 与 `BluetoothSwitch` 同
 
 - [ ] **Step 4: 编译验证**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew compileReleaseKotlin --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" compileReleaseKotlin --stacktrace`
 Expected: `BUILD SUCCESSFUL`，无 warning。`enableIfOff()` 仍在文件里且仍被 `ReEnableReceiver.kt:26` 和 `ReEnableScheduler.kt:49` 调用，所以不会有 unused 警告。
 
 - [ ] **Step 5: Commit**
@@ -676,7 +682,7 @@ object PendingResetStore {
 
 - [ ] **Step 2: 编译验证**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew compileReleaseKotlin --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" compileReleaseKotlin --stacktrace`
 Expected: `BUILD SUCCESSFUL`，无 warning
 
 - [ ] **Step 3: Commit**
@@ -810,7 +816,7 @@ object Notifier {
 
 - [ ] **Step 3: 编译验证**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew compileReleaseKotlin --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" compileReleaseKotlin --stacktrace`
 Expected: `BUILD SUCCESSFUL`，无 warning
 
 - [ ] **Step 4: Commit**
@@ -1151,7 +1157,7 @@ object ReEnableScheduler {
 
 - [ ] **Step 6: 编译 + 全量测试**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew testReleaseUnitTest --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" testReleaseUnitTest --stacktrace`
 Expected: `BUILD SUCCESSFUL`，28 条测试全过（`ReEnablePolicyTest` 18 + `BandMatcherTest` 10）。
 
 这一步能过的原因是：`ReEnableScheduler.schedule()` 的唯一调用方就是 `BandResetController.cycleBluetooth()`，Step 4 已经把它换掉了；而 `ReEnableReceiver.kt:26` 调的是 `BluetoothSwitch.enableIfOff()`，那个函数 Task 3 特意保留着，要到 Task 8 才删。
@@ -1324,7 +1330,7 @@ class ReEnableReceiver : BroadcastReceiver() {
 
 - [ ] **Step 2: 编译 + 全量测试**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew testReleaseUnitTest --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" testReleaseUnitTest --stacktrace`
 Expected: `BUILD SUCCESSFUL`，28 条测试全过
 
 - [ ] **Step 3: Commit**
@@ -1375,7 +1381,7 @@ import android.util.Log
 
 - [ ] **Step 3: 编译 + 全量测试**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew testReleaseUnitTest --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" testReleaseUnitTest --stacktrace`
 Expected: `BUILD SUCCESSFUL`，28 条测试全过，**无 unused import warning**
 
 - [ ] **Step 4: 确认全项目再无进程内重开定时器**
@@ -1487,7 +1493,7 @@ class ResetService : Service() {
 
 - [ ] **Step 2: 编译验证**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew compileReleaseKotlin --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" compileReleaseKotlin --stacktrace`
 Expected: `BUILD SUCCESSFUL`，无 warning
 
 - [ ] **Step 3: Commit**
@@ -1599,7 +1605,7 @@ class PermissionActivity : Activity() {
 
 - [ ] **Step 2: 编译验证**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew compileReleaseKotlin --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" compileReleaseKotlin --stacktrace`
 Expected: `BUILD SUCCESSFUL`，无 warning
 
 - [ ] **Step 3: Commit**
@@ -1693,7 +1699,7 @@ class MainActivity : Activity() {
 
 - [ ] **Step 2: 编译验证**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew compileReleaseKotlin --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" compileReleaseKotlin --stacktrace`
 Expected: `BUILD SUCCESSFUL`，无 warning（`TAG` 有被两条日志用到，不会报 unused）
 
 - [ ] **Step 3: Commit**
@@ -1779,7 +1785,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - [ ] **Step 3: 编译 + 全量测试**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew testReleaseUnitTest --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" testReleaseUnitTest --stacktrace`
 Expected: `BUILD SUCCESSFUL`，28 条测试全过
 
 - [ ] **Step 4: Commit**
@@ -1904,7 +1910,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - [ ] **Step 3: 编译验证**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew assembleRelease --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" assembleRelease --stacktrace`
 Expected: `BUILD SUCCESSFUL`
 
 - [ ] **Step 4: 用 aapt2 确认 manifest 真的落地了**
@@ -1955,7 +1961,7 @@ Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 清构建，跑全部单测**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew clean testReleaseUnitTest --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" clean testReleaseUnitTest --stacktrace`
 Expected: `BUILD SUCCESSFUL`，28 条测试全过：
 ```bash
 grep -o 'tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' app/build/test-results/testReleaseUnitTest/*.xml
@@ -1964,7 +1970,7 @@ Expected 两行：`tests="18" ... failures="0" errors="0"`（ReEnablePolicyTest�
 
 - [ ] **Step 2: 构建签名 release APK**
 
-Run: `source ~/.cache/btreset-build/env.sh && ./gradlew assembleRelease --stacktrace`
+Run: `source ~/.cache/btreset-build/env.sh && "$BTRESET_GRADLE" assembleRelease --stacktrace`
 Expected: `BUILD SUCCESSFUL`，产出 `app/build/outputs/apk/release/app-release.apk`
 
 - [ ] **Step 3: 确认签名与仓库里的 keystore 一致**
