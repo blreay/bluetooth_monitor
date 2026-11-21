@@ -153,7 +153,7 @@ object ReEnablePolicy {
 enum class AdapterState { OFF, TURNING_ON, ON, TURNING_OFF, UNKNOWN }
 ```
 
-`UNKNOWN` 覆盖两种情况：拿不到 `BluetoothAdapter`，以及 `getState()` 返回了四个已知值之外的东西。
+`UNKNOWN` 覆盖三种情况：拿不到 `BluetoothAdapter`、`getState()` 返回了四个已知值之外的东西、以及 `getState()` 抛异常（缺 `BLUETOOTH_CONNECT` 时可能）。映射由 `BluetoothSwitch.state()` 用真常量完成。
 
 ### 4.2 求值顺序
 
@@ -195,7 +195,7 @@ enum class AdapterState { OFF, TURNING_ON, ON, TURNING_OFF, UNKNOWN }
 | `PermissionActivity.kt` | **全项目唯一会有窗口的地方**，只在首次授权时出现。半透明主题，`requestPermissions` → 授权后 `startService(ResetService)` → `finish()`；被拒则记日志 + Toast 说明无法工作 + `finish()`，不重试、不死循环 |
 | `ResetService.kt` | started（非前台，无通知）。`onStartCommand` 跑快段，回调后 `stopSelf()`，返回 `START_NOT_STICKY` |
 | `ReEnablePolicy.kt` | §4.1 的纯决策函数 |
-| `AdapterState.kt` | 枚举 + `fromFramework(int)` 映射 |
+| `AdapterState.kt` | 蓝牙状态的裸枚举，零 Android import。int→枚举的映射不放在这里，而是放在 `BluetoothSwitch.state()` 里直接用 `BluetoothAdapter.STATE_*` 真常量 —— 手抄 10/11/12/13 只会让测试验证"抄的和抄的一致"，而抄错 `TURNING_ON`/`TURNING_OFF` 就会重现本设计要修的 bug |
 | `PendingResetStore.kt` | SharedPreferences 存 `{armed, phase, attempts, wantsToast}`，慢段唯一真相来源。跨进程死亡存活。`wantsToast` 必须存进来而不是靠 Intent 传：慢段的每一跳都是系统重新拉起进程后的一次独立 `onReceive`，拿不到当初那次启动的 Intent |
 | `Notifier.kt` | **唯一碰 Toast 的地方** |
 
@@ -310,7 +310,6 @@ sendBroadcast(RESET_IF_PRESENT) → TriggerReceiver.goAsync()
 | 测试 | 内容 |
 |---|---|
 | `ReEnablePolicyTest`（新，约 18 条） | (phase × state) 每个格子；`attempts` 上限两侧（119 / 120）；两个 give-up 变体分别在正确 phase 出现；`UNKNOWN` 在两个 phase 下都优先于一切；成功判定优先于放弃判定（`WAITING_ON` + `ON` + `attempts=120` → `DONE_RESTORED`） |
-| `AdapterStateTest`（新，约 6 条） | 四个框架 int（10/11/12/13）正确映射；垃圾值（0、-1、99）→ `UNKNOWN` |
 | `BandMatcherTest`（不变，10 条） | 匹配逻辑没动 |
 
 `ReEnablePolicyTest` 覆盖的正是 v1 完全没被测到、却恰好坏掉的那部分逻辑。v1 只有 `BandMatcher` 一个类有测试。
