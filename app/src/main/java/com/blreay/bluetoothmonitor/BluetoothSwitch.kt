@@ -1,10 +1,8 @@
 package com.blreay.bluetoothmonitor
 
-import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.util.Log
 
 /**
@@ -60,43 +58,16 @@ object BluetoothSwitch {
     }
 
     /**
-     * Turns Bluetooth on if it is currently off. Idempotent, so the in-process
-     * timer and the system alarm can both call it without coordinating.
-     */
-    fun enableIfOff(context: Context) {
-        val adapter = adapter(context)
-        if (adapter == null) {
-            Log.e(TAG, "no BluetoothAdapter; cannot re-enable")
-            return
-        }
-        if (adapter.isEnabled) {
-            Log.i(TAG, "Bluetooth already on; nothing to do")
-            return
-        }
-        if (context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            Log.e(TAG, "BLUETOOTH_CONNECT not granted; Bluetooth is OFF and needs a manual toggle")
-            return
-        }
-        @Suppress("DEPRECATION")
-        val ok = try {
-            adapter.enable()
-        } catch (t: Throwable) {
-            Log.e(TAG, "enable() threw", t)
-            false
-        }
-        if (ok) {
-            Log.i(TAG, "Bluetooth turned back on")
-        } else {
-            Log.e(TAG, "enable() returned false; Bluetooth is OFF and needs a manual toggle")
-        }
-    }
-
-    /**
      * Asks the system to turn Bluetooth on. Callers must not decide when to
      * call this from a timer or from `!isEnabled` - [ReEnablePolicy] decides,
      * and it only ever says yes at exactly STATE_OFF.
+     *
+     * There is deliberately no BLUETOOTH_CONNECT check here. The fast phase
+     * already verified the grant before arming the chain. If it is revoked
+     * mid-flight the call throws, is caught below, and the chain retries
+     * until the cap - bounded, and visible in the log as a run of
+     * "enable() threw". Checking here instead would only turn that into a
+     * silent no-op, which is how v1 lost the radio without a trace.
      *
      * @return what the framework said. A false return does NOT end the chain:
      *         the next tick re-reads the state and tries again, up to
