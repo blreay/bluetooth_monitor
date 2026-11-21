@@ -2578,3 +2578,49 @@ git push origin main
 2. `Notifier` 的所有方法都必须在主线程调用。三个调用点都在主线程：`ScanCallback.onScanResult`（默认投递到 main looper）、`ReEnableReceiver.onReceive`、`PermissionActivity` 回调。新增调用点时要复查这一条，否则 `Toast` 会抛 `Can't toast on a thread that has not called Looper.prepare()`。
 
 其余引用全部一致。
+
+---
+
+## Execution record (2026-11-21)
+
+16 个任务全部执行完毕，已 push 到 `main`（`d35d9b9`），CI 一次通过，滚动 Release 已更新。
+
+### 实际发生的偏差
+
+| 计划里写的 | 实际 | 原因 |
+|---|---|---|
+| Task 6 只改 `ReEnableScheduler.kt` + `BandResetController.kt` 两个文件 | 改了四个文件，并把 Task 12 整个并了进来 | 改 `run()` 签名、同时删掉 `IN_PROCESS_DELAY_MS`，会让 v1 的两个入口（`MainActivity`、`TriggerReceiver`）同时编译不过。不存在更小的可编译单元：修 `MainActivity` 需要 `ResetService`，而 `ResetService` 需要新签名。已在 commit `4738efc` 里把计划正文和任务表一起改掉 |
+| 用 `./gradlew` | 用 `"$BTRESET_GRADLE"`（本地 Gradle 8.7） | 本机无网络，wrapper 去下发行版失败：`~/.gradle/wrapper/dists/` 下有一个完好的 dist 和一个只剩 `.zip.part` 的坏 dist，wrapper 挑中了坏的。版本与 `gradle-wrapper.properties` 要求的 8.7 一致，产物相同。**`gradlew` 和 wrapper properties 一个字没动** —— CI 有网络，靠它们构建，已连绿四次 |
+| Task 14 Step 6 用字面量 grep 校对 README | 三条字符串报"源码里没有" | 那三条是运行时插值出来的：`"giving up ($action) ..."`（`$action` 渲染成枚举名）和 `"BLE scan failed errorCode=$errorCode"`。README 记的是**渲染后的日志行**，是对的；字面量 grep 看不到插值。已逐条回源码确认 |
+| —— | README 另有两处过时说法，计划没覆盖 | ①「首次使用」说之后每次运行"完全静默"，与常开 Toast 矛盾（而这两条消息正是用户明确要求的）；② 广播小节把 8 秒那条路径叫"Activity 路径"，可那次扫描现在跑在 `ResetService` 里。都已修 |
+| Task 13 Step 4 期望看到 `@android:style/Theme.NoDisplay` | aapt2 输出的是数字 id `@0x01030055` | 用 `javap -constants android/R$style.class` 反查：`Theme_NoDisplay = 16973909 = 0x01030055`，且整个 `android.R.style` 表里只有这一个常量取该值。已确认 |
+
+### 证过的
+
+- **28 条单元测试全绿**（`clean testReleaseUnitTest`）：18 条 `ReEnablePolicyTest` + 10 条 `BandMatcherTest`，0 failures / 0 errors。结果 XML 用 `ElementTree` 解析 —— 早先手搓正则被自闭合的 `<testcase ... />` 坑过一次，会误报是哪几条失败。
+- **策略测试有牙齿**，不是只会通过。两轮变异测试：把 `attempts >= MAX_ATTEMPTS` 判断挪到 `state == ON` 之前 → 恰好 2 条求值顺序测试变红；挪到 `RETRY` 之后 → 恰好 2 条上限测试变红且报 `but was:<RETRY>`，也就是那个无限闹钟循环本身。
+- **源码里零残留**：`enableIfOff`、`IN_PROCESS_DELAY_MS`、`ALARM_DELAY_MS`、`ReEnableScheduler.schedule` 在 `app/src` 下各 0 命中。docs 里的命中是 v1 计划和 spec 的历史叙述，故意保留。
+- **调用点唯一**：`BluetoothSwitch.enable(` 只有 `ReEnableReceiver:66` 一个调用者，`BluetoothSwitch.disable(` 只有 `BandResetController:240` 一个。闹钟链只在 `BandResetController:254`（`cycleBluetooth()` 内）布置一次，`ReEnableReceiver` 里那两处是续排。
+- **进程内定时器只剩两个**，都跟慢段无关：`BandResetController:206` 扫描超时、`TriggerReceiver:56` goAsync 兜底。
+- **README 与源码逐项对齐**：15 条被引用的日志字符串全部回源码核过；源码里 10 个 `BtReset.*` tag 与 README 那行 `adb logcat -s` **完全一致**（diff 无输出）；`strings.xml` 两条 Toast 文案在；6 秒 / 8 秒 / 120 跳 / 每秒一跳 / 2 分钟这些数字分别对上 `RECEIVER_SCAN_TIMEOUT_MS`、`SCAN_TIMEOUT_MS`、`MAX_ATTEMPTS`、`TICK_INTERVAL_MS`。
+- **签名一致**：`apksigner` 和 `keytool` 两个独立来源都给出 `2ebfee29…35292dad`，所以覆盖安装不会丢已授予的权限。
+- **CI 一次通过**：run #4，`conclusion: success`，`head_sha` = `d35d9b9`。
+- **发布的确实是新包**，不是 CI 绿了却发旧包：`latest` Release 只有一个 `bt-reset.apk`（2048345 字节），`versionCode=5`（上一版 4），`targetSdkVersion:'32'`，manifest 里 `PermissionActivity`、`ResetService`、`ReEnableReceiver`、`Theme.NoDisplay` 四项全在。
+
+### 没证过的 —— 只有真机能答
+
+单元测试只能证明**状态机决策正确**。下面这几条它一条也证明不了：
+
+1. **MIUI 是否放行 `disable()`。**「开关蓝牙」权限默认"询问"，不手动设成"允许"就会弹框。这是 MIUI 私有权限，代码无法申请或绕过 —— 官方豁免清单只有 Device Owner、Profile Owner、系统应用三类身份。
+2. **闹钟能否拉起进程。** 慢段现在**完全**依赖 `AlarmManager` + MIUI「自启动」。自启动关着，蓝牙会被留在关闭状态。
+3. **Toast 能否显示。** MIUI 可能压制后台应用的 Toast。真机看不到，就退回短 heads-up Notification。
+4. **`disable()`/`enable()` 在 targetSdk 32 下的真机行为。** 官方语义是清楚的（`enable()` 遇 "immediate problem" 返回 `false`），但 MIUI 具体怎么反应只能试。
+5. **`Theme.NoDisplay` 在 MIUI 上是否仍会闪一下启动图。** 若闪，把 `MainActivity` 主题换回 `@style/Theme.BtReset.Invisible`（半透明主题不生成 starting window），其余一律不动 —— 消除卡顿的关键是 `onCreate` 里立刻 `finish()`，主题只决定有没有那一下闪烁。一行改动，随时可回退。
+
+**发布的 APK 与本地构建产物不是字节相同的**（3021 字节不同：versionCode、签名块、zip 时间戳），大小相同是巧合。两者各自独立验证过，此处不主张可重现构建。
+
+### 交付状态
+
+- `origin/main` = `d35d9b9`，工作区干净
+- 下载地址不变：`https://github.com/blreay/bluetooth_monitor/releases/download/latest/bt-reset.apk`
+- 待用户按 spec §10 四条验收标准做真机验收
