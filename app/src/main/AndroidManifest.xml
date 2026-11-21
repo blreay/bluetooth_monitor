@@ -20,7 +20,7 @@
         android:theme="@style/Theme.BluetoothMonitor"
         android:usesCleartextTraffic="false">
         <activity
-            android:name=".TriggerActivity"
+            android:name=".BandResetActivity"
             android:exported="true"
             android:excludeFromRecents="true"
             android:launchMode="singleTop"
@@ -31,7 +31,7 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <intent-filter>
-                <action android:name="com.blreay.bluetoothmonitor.RUN" />
+                <action android:name="com.blreay.bandreset.gpt.RUN" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>

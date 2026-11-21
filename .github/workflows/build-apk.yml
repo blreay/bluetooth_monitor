@@ -45,14 +45,14 @@ jobs:
       - name: Prepare APK and checksum
         run: |
           mkdir -p artifacts
-          cp app/build/outputs/apk/debug/app-debug.apk artifacts/bluetooth-monitor.apk
+          cp app/build/outputs/apk/debug/app-debug.apk artifacts/band-reset-gpt.apk
           cd artifacts
-          sha256sum bluetooth-monitor.apk > bluetooth-monitor.apk.sha256
+          sha256sum band-reset-gpt.apk > band-reset-gpt.apk.sha256
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bluetooth-monitor-apk
+          name: band-reset-gpt-apk
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
@@ -67,3 +67,50 @@ jobs:
             app/build/reports/lint-results-debug.*
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Stage APK for GPT release
+        if: github.ref == 'refs/heads/gpt' && github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-release-assets
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-gpt-release:
+    needs: build
+    if: github.ref == 'refs/heads/gpt' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Download staged assets
+        uses: actions/download-artifact@v4
+        with:
+          name: gpt-release-assets
+          path: release/
+
+      - name: Publish GPT release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: gpt-v${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            release/band-reset-gpt.apk \
+            release/band-reset-gpt.apk.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "GPT Build v${{ github.run_number }}" \
+            --notes "APK 签名版本: debug | 包名: com.blreay.bandreset.gpt | 构建号: v${{ github.run_number }} | 提交: $GITHUB_SHA" \
+            --latest=false
+          echo "RELEASE_TAG=$TAG" >> "$GITHUB_ENV"
+
+      - name: Report download URL
+        run: |
+          REPO="${{ github.repository }}"
+          echo "APK 下载地址:"
+          echo "https://github.com/$REPO/releases/download/gpt-v${{ github.run_number }}/band-reset-gpt.apk"
+          echo "SHA256:"
+          echo "https://github.com/$REPO/releases/download/gpt-v${{ github.run_number }}/band-reset-gpt.apk.sha256"

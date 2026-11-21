@@ -1,4 +1,4 @@
-package com.blreay.bluetoothmonitor;
+package com.blreay.bandreset.gpt;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
@@ -13,38 +13,56 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ResultReceiver;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.util.ArrayList;
 import java.util.List;
 
 /** Transparent permission/foreground-launch bridge, deliberately without an app page. */
-public final class TriggerActivity extends Activity {
-    public static final String ACTION_RUN = "com.blreay.bluetoothmonitor.RUN";
-    private static final String TAG = "BluetoothMonitor";
+public final class BandResetActivity extends Activity {
+    public static final String ACTION_RUN = "com.blreay.bandreset.gpt.RUN";
+    private static final String TAG = "BandResetGPT";
     private static final int REQUEST_CONNECT = 1;
     private static final int REQUEST_SCAN = 2;
-    private static final long READY_TIMEOUT_MS = 3500;
+    private static final long READY_TIMEOUT_MS = InvocationHandshake.READY_TIMEOUT_MS;
+    private static final long OPERATION_TIMEOUT_MS = InvocationHandshake.OPERATION_TIMEOUT_MS;
     private static final String DENIED_PREFS = "denied_permissions";
     // Main-thread-only ownership also blocks a second entry during permission dialogs.
     private static Invocation activeInvocation;
     private Invocation invocation;
     private boolean resumed;
+    private final Runnable terminalCallback = this::finishQuietly;
 
     private static final class Invocation {
         final Handler mainHandler = new Handler(Looper.getMainLooper());
-        TriggerActivity activity;
+        final InvocationHandshake handshake = new InvocationHandshake();
         boolean connectRequested;
         boolean scanRequested;
         boolean permissionInFlight;
         boolean serviceRequested;
         boolean finished;
         Runnable timeout;
-        final ResultReceiver readyReceiver = new ResultReceiver(mainHandler) {
+        Runnable operationTimeout;
+        final ResultReceiver resultReceiver = new ResultReceiver(mainHandler) {
             @Override protected void onReceiveResult(int resultCode, Bundle resultData) {
-                complete(resultCode == ResetService.RESULT_READY ? "SERVICE_READY" : "SERVICE_START_FAILED");
+                if (finished) return;
+                if (resultCode == ResetService.RESULT_READY) {
+                    handshake.ready();
+                    if (timeout != null) mainHandler.removeCallbacks(timeout);
+                    timeout = null;
+                    Log.i(TAG, "SERVICE_READY_WAITING_FOR_TERMINAL");
+                } else {
+                    String outcome = resultData == null ? null : resultData.getString(ResetService.EXTRA_OUTCOME);
+                    complete(outcome == null ? "SERVICE_START_FAILED" : outcome);
+                }
             }
         };
+
+        void checkTimeout() {
+            handshake.timeout(SystemClock.elapsedRealtime());
+            if (handshake.isFinished()) complete(handshake.outcome());
+        }
 
         void complete(String reason) {
             if (finished) return;
@@ -52,8 +70,10 @@ public final class TriggerActivity extends Activity {
             Log.i(TAG, reason);
             if (timeout != null) mainHandler.removeCallbacks(timeout);
             timeout = null;
+            if (operationTimeout != null) mainHandler.removeCallbacks(operationTimeout);
+            operationTimeout = null;
             if (activeInvocation == this) activeInvocation = null;
-            if (activity != null) activity.finishQuietly();
+            handshake.terminal(reason);
         }
     }
 
@@ -71,17 +91,17 @@ public final class TriggerActivity extends Activity {
             }
             invocation = new Invocation();
             if (savedInstanceState != null) {
-                invocation.connectRequested = savedInstanceState.getBoolean("connectRequested");
-                invocation.scanRequested = savedInstanceState.getBoolean("scanRequested");
-                invocation.permissionInFlight = savedInstanceState.getBoolean("permissionInFlight");
+                invocation.connectRequested = savedInstanceState.getBoolean("com.blreay.bandreset.gpt.CONNECT_REQUESTED");
+                invocation.scanRequested = savedInstanceState.getBoolean("com.blreay.bandreset.gpt.SCAN_REQUESTED");
+                invocation.permissionInFlight = savedInstanceState.getBoolean("com.blreay.bandreset.gpt.PERMISSION_IN_FLIGHT");
                 // A process-recreated launch must not start another session after handoff.
-                if (savedInstanceState.getBoolean("serviceRequested")) {
-                    invocation.finished = true;
+                if (savedInstanceState.getBoolean("com.blreay.bandreset.gpt.SERVICE_REQUESTED")) {
+                    invocation.complete("PROCESS_RECREATED_AFTER_HANDOFF");
                 }
             }
             activeInvocation = invocation;
         }
-        invocation.activity = this;
+        invocation.handshake.attach(terminalCallback);
         if (invocation.finished) {
             if (activeInvocation == invocation) activeInvocation = null;
             finishQuietly();
@@ -133,7 +153,7 @@ public final class TriggerActivity extends Activity {
                 return;
             }
         } catch (RuntimeException error) {
-            Log.e(TAG, "INITIAL_STATE_READ_FAILED", error);
+            Log.e(TAG, "INITIAL_STATE_READ_FAILED type=" + error.getClass().getSimpleName());
             invocation.complete("INITIAL_STATE_READ_FAILED");
             return;
         }
@@ -162,15 +182,18 @@ public final class TriggerActivity extends Activity {
                 return;
             }
             // Only onResume (or a permission callback while resumed) may initiate FGS.
-            invocation.serviceRequested = true;
             Invocation current = invocation;
-            current.timeout = () -> current.complete("SERVICE_READY_TIMEOUT");
+            if (!current.handshake.request(SystemClock.elapsedRealtime())) return;
+            current.serviceRequested = true;
+            current.timeout = current::checkTimeout;
+            current.operationTimeout = current::checkTimeout;
             current.mainHandler.postDelayed(current.timeout, READY_TIMEOUT_MS);
+            current.mainHandler.postDelayed(current.operationTimeout, OPERATION_TIMEOUT_MS);
             Intent intent = new Intent(this, ResetService.class);
-            intent.putExtra(ResetService.EXTRA_READY_RECEIVER, current.readyReceiver);
+            intent.putExtra(ResetService.EXTRA_RESULT_RECEIVER, current.resultReceiver);
             startForegroundService(intent);
         } catch (RuntimeException error) {
-            Log.e(TAG, "SERVICE_START_FAILED", error);
+            Log.e(TAG, "SERVICE_START_FAILED type=" + error.getClass().getSimpleName());
             invocation.complete("SERVICE_START_FAILED");
         }
     }
@@ -192,7 +215,7 @@ public final class TriggerActivity extends Activity {
             requestPermissions(permissions, requestCode);
         } catch (RuntimeException error) {
             invocation.permissionInFlight = false;
-            Log.e(TAG, "PERMISSION_REQUEST_FAILED", error);
+            Log.e(TAG, "PERMISSION_REQUEST_FAILED type=" + error.getClass().getSimpleName());
             invocation.complete("PERMISSION_REQUEST_FAILED");
         }
     }
@@ -221,16 +244,18 @@ public final class TriggerActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
         if (invocation == null) return;
-        outState.putBoolean("connectRequested", invocation.connectRequested);
-        outState.putBoolean("scanRequested", invocation.scanRequested);
-        outState.putBoolean("permissionInFlight", invocation.permissionInFlight);
-        outState.putBoolean("serviceRequested", invocation.serviceRequested);
+        outState.putBoolean("com.blreay.bandreset.gpt.CONNECT_REQUESTED", invocation.connectRequested);
+        outState.putBoolean("com.blreay.bandreset.gpt.SCAN_REQUESTED", invocation.scanRequested);
+        outState.putBoolean("com.blreay.bandreset.gpt.PERMISSION_IN_FLIGHT", invocation.permissionInFlight);
+        outState.putBoolean("com.blreay.bandreset.gpt.SERVICE_REQUESTED", invocation.serviceRequested);
     }
 
     @Override protected void onDestroy() {
-        if (invocation != null && invocation.activity == this) {
-            invocation.activity = null;
-            if (!isChangingConfigurations() && !invocation.finished) {
+        if (invocation != null) {
+            invocation.handshake.detach(terminalCallback);
+            // Service callbacks and absolute deadlines own an already handed-off run.
+            // Neither configuration changes nor Activity destruction cancel recovery.
+            if (!isChangingConfigurations() && !invocation.finished && !invocation.serviceRequested) {
                 invocation.complete("TRIGGER_DESTROYED");
             }
         }

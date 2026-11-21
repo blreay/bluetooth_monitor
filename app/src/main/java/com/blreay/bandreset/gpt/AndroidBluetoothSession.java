@@ -1,4 +1,4 @@
-package com.blreay.bluetoothmonitor;
+package com.blreay.bandreset.gpt;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
@@ -19,19 +19,27 @@ import android.location.LocationManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Log;
+import android.widget.Toast;
 
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Consumer;
 
 /** One main-thread-owned Android port; no cached or bonded device-name lookup.
- * Runtime grants are checked by TriggerActivity and at scan start; revocations are caught
+ * Runtime grants are checked by BandResetActivity and at scan start; revocations are caught
  * at every Bluetooth operation, including cleanup. The API checks span helper methods.
  */
 @SuppressLint("MissingPermission")
 final class AndroidBluetoothSession implements ResetController.Port {
-    private static final String TAG = "BluetoothMonitor";
+    private static final String TAG = "BandResetGPT";
+    private final String sessionId = java.util.UUID.randomUUID().toString();
+    private final long startedAt = SystemClock.elapsedRealtime();
+    private final SessionFeedback feedback = new SessionFeedback();
+    private ResetController.BluetoothState lastSnapshot = ResetController.BluetoothState.UNKNOWN;
+    private String lastPhase;
+    private boolean completed;
     private final Context context;
     private final Handler mainHandler;
     private final Consumer<String> completion;
@@ -47,19 +55,23 @@ final class AndroidBluetoothSession implements ResetController.Port {
     private final BroadcastReceiver stateReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context ignored, Intent intent) {
             if (closed || !BluetoothAdapter.ACTION_STATE_CHANGED.equals(intent.getAction())) return;
-            int advertised = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
-            // The exported receiver accepts privileged Bluetooth senders. Never trust its extras
-            // alone: spoofed/stale/transition broadcasts cannot confirm an OFF or ON state.
-            ResetController.BluetoothState actual = bluetoothState();
-            if (advertised == BluetoothAdapter.STATE_OFF && actual == ResetController.BluetoothState.OFF) {
-                controller.onBluetoothOff();
-            } else if (advertised == BluetoothAdapter.STATE_ON && actual == ResetController.BluetoothState.ON) {
-                controller.onBluetoothOn();
+            requireMainThread();
+            try {
+                int broadcast = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
+                // A mismatch is diagnostic only, never a reason to drop the state prompt.
+                ResetController.BluetoothState snapshot = bluetoothState();
+                diagnostic("BROADCAST state=" + broadcast + " snapshot=" + snapshot);
+            } catch (RuntimeException error) {
+                reportFailure("BROADCAST_READ_FAILED", error);
+            } finally {
+                controller.onBluetoothStateChanged();
+                logPhase();
             }
         }
     };
 
     AndroidBluetoothSession(Context context, Handler mainHandler, Consumer<String> completion) {
+        requireMainThread();
         this.context = context;
         this.mainHandler = mainHandler;
         this.completion = completion;
@@ -69,6 +81,7 @@ final class AndroidBluetoothSession implements ResetController.Port {
     void start() {
         requireMainThread();
         if (closed || controller.getState() != ResetController.State.NEW) return;
+        diagnostic("SESSION_START");
         try {
             BluetoothManager manager = context.getSystemService(BluetoothManager.class);
             adapter = manager == null ? null : manager.getAdapter();
@@ -80,25 +93,35 @@ final class AndroidBluetoothSession implements ResetController.Port {
             }
             receiverRegistered = true;
             controller.start();
+            logPhase();
         } catch (RuntimeException error) {
-            Log.e(TAG, "SESSION_START_FAILED", error);
+            reportFailure("SESSION_START_FAILED", error);
             controller.onFailure("SESSION_START_FAILED");
         }
+    }
+
+    @Override public long nowMs() {
+        return SystemClock.elapsedRealtime();
     }
 
     @Override public ResetController.BluetoothState bluetoothState() {
         requireMainThread();
         if (adapter == null) return ResetController.BluetoothState.UNKNOWN;
         try {
-            return switch (adapter.getState()) {
+            ResetController.BluetoothState snapshot = switch (adapter.getState()) {
                 case BluetoothAdapter.STATE_ON -> ResetController.BluetoothState.ON;
                 case BluetoothAdapter.STATE_OFF -> ResetController.BluetoothState.OFF;
                 case BluetoothAdapter.STATE_TURNING_ON -> ResetController.BluetoothState.TURNING_ON;
                 case BluetoothAdapter.STATE_TURNING_OFF -> ResetController.BluetoothState.TURNING_OFF;
                 default -> ResetController.BluetoothState.UNKNOWN;
             };
+            if (snapshot != lastSnapshot) diagnostic("SNAPSHOT state=" + snapshot);
+            lastSnapshot = snapshot;
+            logPhase();
+            return snapshot;
         } catch (RuntimeException error) {
             reportFailure("BLUETOOTH_STATE_READ_FAILED", error);
+            lastSnapshot = ResetController.BluetoothState.UNKNOWN;
             return ResetController.BluetoothState.UNKNOWN;
         }
     }
@@ -118,16 +141,16 @@ final class AndroidBluetoothSession implements ResetController.Port {
             if (context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED
                     || (Build.VERSION.SDK_INT >= 31
                     && context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED)) {
-                Log.w(TAG, "SCAN_PERMISSION_MISSING");
+                diagnostic("SCAN_PERMISSION_MISSING");
                 return false;
             }
             if (!isLocationEnabled(context)) {
-                Log.w(TAG, "LOCATION_DISABLED");
+                diagnostic("LOCATION_DISABLED");
                 return false;
             }
             scanner = adapter.getBluetoothLeScanner();
             if (scanner == null) {
-                Log.w(TAG, "BLE_SCANNER_UNAVAILABLE");
+                diagnostic("BLE_SCANNER_UNAVAILABLE");
                 return false;
             }
             ScanCallback callback = new ScanCallback() {
@@ -143,7 +166,7 @@ final class AndroidBluetoothSession implements ResetController.Port {
                 @Override public void onScanFailed(int errorCode) {
                     mainHandler.post(() -> {
                         if (closed || scanCallback != this) return;
-                        Log.e(TAG, "BLE_SCAN_FAILED code=" + errorCode);
+                        diagnostic("BLE_SCAN_FAILED code=" + errorCode);
                         controller.onFailure("BLE_SCAN_FAILED");
                     });
                 }
@@ -157,7 +180,7 @@ final class AndroidBluetoothSession implements ResetController.Port {
             scanner.startScan(Collections.singletonList(filter), settings, callback);
             return true;
         } catch (RuntimeException error) {
-            Log.e(TAG, "SCAN_START_FAILED", error);
+            reportFailure("SCAN_START_FAILED", error);
             stopScan();
             return false;
         }
@@ -168,6 +191,7 @@ final class AndroidBluetoothSession implements ResetController.Port {
         try {
             ScanRecord record = result.getScanRecord();
             if (record != null) controller.onAdvertisement(record.getDeviceName());
+            logPhase();
         } catch (RuntimeException error) {
             reportFailure("ADVERTISEMENT_READ_FAILED", error);
         }
@@ -187,15 +211,23 @@ final class AndroidBluetoothSession implements ResetController.Port {
         }
     }
 
+    @Override public void onMatch() {
+        requireMainThread();
+        if (feedback.match()) {
+            diagnostic("TARGET_MATCH");
+            shortToast(R.string.target_found);
+        }
+    }
+
     @SuppressWarnings("deprecation")
     @Override public boolean disable() {
         requireMainThread();
         try {
             boolean accepted = adapter != null && adapter.disable();
-            if (!accepted) Log.w(TAG, "BLUETOOTH_DISABLE_REJECTED");
+            diagnostic("DISABLE return=" + accepted);
             return accepted;
         } catch (RuntimeException error) {
-            Log.e(TAG, "BLUETOOTH_DISABLE_FAILED", error);
+            reportFailure("BLUETOOTH_DISABLE_FAILED return=false", error);
             return false;
         }
     }
@@ -205,10 +237,10 @@ final class AndroidBluetoothSession implements ResetController.Port {
         requireMainThread();
         try {
             boolean accepted = adapter != null && adapter.enable();
-            if (!accepted) Log.w(TAG, "BLUETOOTH_ENABLE_REJECTED");
+            diagnostic("ENABLE return=" + accepted);
             return accepted;
         } catch (RuntimeException error) {
-            Log.e(TAG, "BLUETOOTH_ENABLE_FAILED", error);
+            reportFailure("BLUETOOTH_ENABLE_FAILED return=false", error);
             return false;
         }
     }
@@ -220,6 +252,7 @@ final class AndroidBluetoothSession implements ResetController.Port {
             if (closed || token != timerGeneration) return;
             scheduled = null;
             callback.run();
+            logPhase();
         };
         mainHandler.postDelayed(scheduled, delayMs);
     }
@@ -233,9 +266,9 @@ final class AndroidBluetoothSession implements ResetController.Port {
 
     @Override public void finish(String outcome) {
         requireMainThread();
-        if (closed) return;
+        if (closed || completed) return;
+        complete(outcome);
         close();
-        completion.accept(outcome);
     }
 
     /** Terminal cleanup only, not cancellation: destruction cannot await bounded recovery. */
@@ -243,6 +276,8 @@ final class AndroidBluetoothSession implements ResetController.Port {
         requireMainThread();
         if (closed) return;
         closed = true;
+        if (!completed) complete("SERVICE_DESTROYED");
+        diagnostic("CLEANUP_BEGIN");
         cancelScheduled();
         stopScan();
         if (receiverRegistered) {
@@ -250,16 +285,46 @@ final class AndroidBluetoothSession implements ResetController.Port {
             try {
                 context.unregisterReceiver(stateReceiver);
             } catch (RuntimeException error) {
-                Log.w(TAG, "RECEIVER_CLEANUP_FAILED", error);
+                reportFailure("RECEIVER_CLEANUP_FAILED", error);
             }
+        }
+        diagnostic("CLEANUP_COMPLETE");
+    }
+
+    private void complete(String outcome) {
+        if (completed) return;
+        completed = true;
+        ResetController.BluetoothState snapshot = bluetoothState();
+        diagnostic("TERMINAL outcome=" + outcome + " snapshot=" + snapshot);
+        if (feedback.terminal(outcome, snapshot)) shortToast(R.string.bluetooth_not_restored);
+        completion.accept(outcome);
+    }
+
+    private void shortToast(int resource) {
+        try {
+            Toast.makeText(context, resource, Toast.LENGTH_SHORT).show();
+        } catch (RuntimeException error) {
+            reportFailure("TOAST_FAILED", error);
         }
     }
 
+    private void logPhase() {
+        String phase = controller.getState().name();
+        if (!phase.equals(lastPhase)) {
+            lastPhase = phase;
+            diagnostic("PHASE " + phase);
+        }
+    }
+
+    private void diagnostic(String message) {
+        Log.i(TAG, "session=" + sessionId + " origin=" + startedAt + " elapsed="
+                + (nowMs() - startedAt) + " phase=" + controller.getState() + " " + message);
+    }
+
     private void reportFailure(String reason, RuntimeException error) {
-        Log.e(TAG, reason, error);
-        if (!closed) mainHandler.post(() -> {
-            if (!closed) controller.onFailure(reason);
-        });
+        // No exception messages/stack traces: vendor messages can include device identifiers.
+        // Read/toggle/cleanup failures are diagnostics, not immediate controller termination.
+        diagnostic(reason + " exception=" + error.getClass().getSimpleName());
     }
 
     private static void requireMainThread() {
