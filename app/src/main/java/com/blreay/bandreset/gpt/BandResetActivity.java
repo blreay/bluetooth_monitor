@@ -14,6 +14,8 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.blreay.bandreset.gpt.shizuku.ShizukuManager;
+
 /**
  * Minimal permission bridge — opens, requests every needed permission in one batch,
  * launches the foreground service, and finishes immediately. All scanning / toggling
@@ -78,6 +80,16 @@ public final class BandResetActivity extends Activity {
     private void launchAndFinish() {
         if (launched || isFinishing()) return;
         launched = true;
+        // Request Shizuku permission if installed but not yet granted. This is a
+        // best-effort call — if Shizuku is absent or the user denies it, the
+        // service will silently fall back to the normal Bluetooth API.
+        try {
+            if (ShizukuManager.isInstalled(this) && !ShizukuManager.hasPermission()) {
+                ShizukuManager.requestPermission(this);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "SHIZUKU_PERMISSION_REQUEST_FAILED type=" + e.getClass().getSimpleName());
+        }
         try {
             startForegroundService(new Intent(this, ResetService.class));
         } catch (RuntimeException e) {

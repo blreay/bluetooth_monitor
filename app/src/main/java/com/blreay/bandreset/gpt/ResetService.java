@@ -16,6 +16,9 @@ import android.widget.Toast;
 
 import java.util.function.Consumer;
 
+import com.blreay.bandreset.gpt.shizuku.BluetoothControlMode;
+import com.blreay.bandreset.gpt.shizuku.ShizukuManager;
+
 /**
  * Private foreground service that owns exactly one bounded reset session. It runs
  * entirely in the background with a persistent low-importance notification; the
@@ -135,29 +138,44 @@ public final class ResetService extends Service {
     // region phase & completion
 
     private void onPhase(String phaseName) {
+        boolean shizuku = isShizukuActive();
         int resId;
         switch (phaseName) {
-            case "SCANNING":       resId = R.string.notification_scanning; break;
-            case "WAITING_OFF":    resId = R.string.notification_waiting_off; break;
-            case "OFF_DELAY":      resId = R.string.notification_off_delay; break;
-            case "WAITING_ON":     resId = R.string.notification_waiting_on; break;
-            default:               return; // NEW, FINISHED — no update
+            case "SCANNING":
+                resId = shizuku ? R.string.notification_scanning_shizuku : R.string.notification_scanning;
+                break;
+            case "WAITING_OFF":
+                resId = shizuku ? R.string.notification_waiting_off_shizuku : R.string.notification_waiting_off;
+                break;
+            case "OFF_DELAY":
+                resId = shizuku ? R.string.notification_off_delay_shizuku : R.string.notification_off_delay;
+                break;
+            case "WAITING_ON":
+                resId = shizuku ? R.string.notification_waiting_on_shizuku : R.string.notification_waiting_on;
+                break;
+            default:
+                return; // NEW, FINISHED — no update
         }
         updateNotification(resId);
-        Log.i(TAG, "PHASE " + phaseName);
+        Log.i(TAG, "PHASE " + phaseName + (shizuku ? " [Shizuku]" : " [normal]"));
     }
 
     private void onSessionFinished(String outcome) {
         Log.i(TAG, "SESSION_FINISHED outcome=" + outcome);
+        boolean shizuku = isShizukuActive();
+        int resId;
         if (isRestored(outcome)) {
-            updateNotification(R.string.notification_done);
-        } else if (outcome.contains("OFF") || outcome.contains("TIMEOUT") || outcome.contains("FAIL")) {
-            // SessionFeedback inside the session already showed the Toast.
-            updateNotification(R.string.notification_done);
+            resId = shizuku ? R.string.notification_done_shizuku : R.string.notification_done;
         } else {
-            updateNotification(R.string.notification_done);
+            resId = shizuku ? R.string.notification_done_shizuku : R.string.notification_done;
         }
+        updateNotification(resId);
         shutdown();
+    }
+
+    private boolean isShizukuActive() {
+        return ShizukuManager.isAvailable()
+                && ShizukuManager.lastMode() == BluetoothControlMode.SHIZUKU;
     }
 
     private static boolean isRestored(String outcome) {

@@ -6,12 +6,23 @@
     <string name="notification_channel">蓝牙重启任务</string>
     <string name="notification_channel_description">在后台扫描蓝牙广播并按条件重启蓝牙，不会连接或配对设备</string>
     <string name="notification_running">正在检查手环广播并处理蓝牙状态</string>
-    <string name="notification_scanning">正在扫描目标手环…</string>
+    <!-- Normal mode notifications -->
+    <string name="notification_scanning">普通模式 · 正在扫描目标手环…</string>
     <string name="notification_matched">已匹配手环，准备关闭蓝牙</string>
-    <string name="notification_waiting_off">等待蓝牙关闭…</string>
-    <string name="notification_off_delay">蓝牙已关闭，3秒后重新开启</string>
-    <string name="notification_waiting_on">等待蓝牙重新开启…</string>
-    <string name="notification_done">蓝牙重启流程完成</string>
+    <string name="notification_waiting_off">普通模式 · 等待蓝牙关闭…</string>
+    <string name="notification_off_delay">普通模式 · 蓝牙已关闭，3秒后重新开启</string>
+    <string name="notification_waiting_on">普通模式 · 等待蓝牙重新开启…</string>
+    <string name="notification_done">普通模式 · 蓝牙重启流程完成</string>
+    <!-- Shizuku mode notifications -->
+    <string name="notification_scanning_shizuku">Shizuku 模式 · 正在扫描目标手环…</string>
+    <string name="notification_waiting_off_shizuku">Shizuku 模式 · 静默关闭蓝牙…</string>
+    <string name="notification_off_delay_shizuku">Shizuku 模式 · 蓝牙已静默关闭，3秒后重新开启</string>
+    <string name="notification_waiting_on_shizuku">Shizuku 模式 · 静默开启蓝牙…</string>
+    <string name="notification_done_shizuku">Shizuku 模式 · 蓝牙重启流程完成</string>
+    <!-- Shizuku fallback -->
+    <string name="notification_shizuku_fallback">Shizuku 不可用，已回退到普通模式</string>
+    <string name="notification_shizuku_failed">Shizuku 调用失败，已回退到普通模式</string>
+    <!-- General -->
     <string name="already_running">蓝牙重启任务已在运行中</string>
     <string name="permission_manually_required">缺少必要权限，请在系统设置中手动授予</string>
     <string name="service_launch_failed">后台服务启动失败</string>

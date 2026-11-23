@@ -34,6 +34,11 @@
     <!-- BLE hardware (optional — the app works without BLE but won't scan). -->
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
+    <!-- Shizuku package queries (Android 11+). -->
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
