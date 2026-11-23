@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.blreay.bandreset.gpt.shizuku.ShizukuManager;
+import rikka.shizuku.Shizuku;
 
 /**
  * Minimal permission bridge — opens, requests every needed permission in one batch,
@@ -23,18 +24,23 @@ import com.blreay.bandreset.gpt.shizuku.ShizukuManager;
  * <p>
  * The Activity uses a small dialog theme, never overlays touch, and stays alive for
  * at most the duration of a single permission-request round-trip.
+ * <p>
+ * When Shizuku is installed but not yet authorized, the Activity stays alive until
+ * Shizuku's authorization result arrives — {@link Shizuku#requestPermission(int)}
+ * starts an asynchronous flow that requires the calling Activity to remain alive.
  */
 public final class BandResetActivity extends Activity {
     private static final String TAG = "BandResetGPT";
     private static final int REQUEST_ALL = 1;
+    private static final int SHIZUKU_REQUEST_CODE = 0;
     private static final String DENIED_PREFS = "denied_permissions";
     private boolean launched;
+    private boolean waitingForShizuku;
+    private Shizuku.OnRequestPermissionResultListener shizukuListener;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // A tiny visible surface satisfies the foreground-service-launch eligibility
-        // rule on API 31+ without a translucent overlay that can steal touch.
         setTitle(getString(R.string.app_name));
         if (ResetService.isActive()) {
             shortToast(R.string.already_running);
@@ -46,9 +52,24 @@ public final class BandResetActivity extends Activity {
     protected void onResume() {
         super.onResume();
         if (launched || isFinishing() || ResetService.isActive()) return;
+
+        // If we're returning from the Shizuku authorization activity, check the result.
+        if (waitingForShizuku) {
+            // Shizuku's own Activity may have finished — check permission state now.
+            if (ShizukuManager.hasPermission()) {
+                Log.i(TAG, "SHIZUKU_PERMISSION_GRANTED_ON_RESUME");
+                ShizukuManager.reset(); // clear the probe cache so isAvailable() re-evaluates
+                proceedToService();
+            } else {
+                // Still not granted — Shizuku dialog was likely dismissed without granting.
+                Log.i(TAG, "SHIZUKU_PERMISSION_STILL_DENIED_ON_RESUME");
+                proceedToService(); // continue in normal mode
+            }
+            return;
+        }
+
         List<String> missing = collectMissing();
         if (!missing.isEmpty()) {
-            // Any previously-denied-and-not-regranted permission blocks auto-retry.
             SharedPreferences denied = getSharedPreferences(DENIED_PREFS, MODE_PRIVATE);
             for (String p : missing) {
                 if (!granted(p) && denied.getBoolean(p, false)) {
@@ -59,7 +80,7 @@ public final class BandResetActivity extends Activity {
             }
             requestPermissions(missing.toArray(new String[0]), REQUEST_ALL);
         } else {
-            launchAndFinish();
+            checkShizukuThenProceed();
         }
     }
 
@@ -73,23 +94,58 @@ public final class BandResetActivity extends Activity {
             denied.putBoolean(permissions[i], !ok);
         }
         denied.apply();
-        // Launch unconditionally — the service will report any remaining permission gaps.
-        launchAndFinish();
+        checkShizukuThenProceed();
     }
 
-    private void launchAndFinish() {
+    @Override
+    protected void onDestroy() {
+        if (shizukuListener != null) {
+            try { Shizuku.removeRequestPermissionResultListener(shizukuListener); }
+            catch (Exception ignored) { }
+            shizukuListener = null;
+        }
+        super.onDestroy();
+    }
+
+    /**
+     * If Shizuku is installed but not yet authorized, request authorization and
+     * wait for the result. Otherwise proceed directly to the foreground service.
+     */
+    private void checkShizukuThenProceed() {
         if (launched || isFinishing()) return;
-        launched = true;
-        // Request Shizuku permission if installed but not yet granted. This is a
-        // best-effort call — if Shizuku is absent or the user denies it, the
-        // service will silently fall back to the normal Bluetooth API.
+
         try {
             if (ShizukuManager.isInstalled(this) && !ShizukuManager.hasPermission()) {
-                ShizukuManager.requestPermission(this);
+                Log.i(TAG, "SHIZUKU_PERMISSION_REQUIRED");
+                waitingForShizuku = true;
+                shizukuListener = (requestCode, grantResult) -> {
+                    Log.i(TAG, "SHIZUKU_PERMISSION_RESULT requestCode=" + requestCode
+                            + " grantResult=" + grantResult);
+                    if (requestCode == SHIZUKU_REQUEST_CODE) {
+                        ShizukuManager.reset(); // clear probe cache so isAvailable() re-evaluates
+                        if (shizukuListener != null) {
+                            try { Shizuku.removeRequestPermissionResultListener(shizukuListener); }
+                            catch (Exception ignored) { }
+                            shizukuListener = null;
+                        }
+                        waitingForShizuku = false;
+                        proceedToService();
+                    }
+                };
+                Shizuku.addRequestPermissionResultListener(shizukuListener);
+                Shizuku.requestPermission(SHIZUKU_REQUEST_CODE);
+                // Do NOT finish — Shizuku needs the Activity alive to show its authorization UI.
+                return;
             }
         } catch (Exception e) {
-            Log.w(TAG, "SHIZUKU_PERMISSION_REQUEST_FAILED type=" + e.getClass().getSimpleName());
+            Log.w(TAG, "SHIZUKU_CHECK_FAILED type=" + e.getClass().getSimpleName());
         }
+        proceedToService();
+    }
+
+    private void proceedToService() {
+        if (launched || isFinishing()) return;
+        launched = true;
         try {
             startForegroundService(new Intent(this, ResetService.class));
         } catch (RuntimeException e) {
@@ -103,10 +159,8 @@ public final class BandResetActivity extends Activity {
 
     private List<String> collectMissing() {
         List<String> missing = new ArrayList<>();
-        // CONNECT is needed to read adapter state on API 31+.
         if (Build.VERSION.SDK_INT >= 31 && !granted(Manifest.permission.BLUETOOTH_CONNECT))
             missing.add(Manifest.permission.BLUETOOTH_CONNECT);
-        // SCAN + FINE location are required for BLE discovery.
         if (Build.VERSION.SDK_INT >= 31 && !granted(Manifest.permission.BLUETOOTH_SCAN))
             missing.add(Manifest.permission.BLUETOOTH_SCAN);
         if (!granted(Manifest.permission.ACCESS_FINE_LOCATION)) {
