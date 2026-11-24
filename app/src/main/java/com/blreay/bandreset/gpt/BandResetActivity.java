@@ -2,7 +2,6 @@ package com.blreay.bandreset.gpt;
 
 import android.Manifest;
 import android.app.Activity;
-import android.bluetooth.BluetoothAdapter;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -15,33 +14,35 @@ import java.util.ArrayList;
 import java.util.List;
 
 import com.blreay.bandreset.gpt.shizuku.ShizukuManager;
-import rikka.shizuku.Shizuku;
 
 /**
  * Minimal permission bridge — opens, requests every needed permission in one batch,
- * launches the foreground service, and finishes immediately. All scanning / toggling
- * happens inside {@link ResetService} on a background notification channel.
+ * launches the foreground service, and finishes. All scanning / toggling happens
+ * inside {@link ResetService} on a background notification channel.
  * <p>
  * The Activity uses a small dialog theme, never overlays touch, and stays alive for
  * at most the duration of a single permission-request round-trip.
  * <p>
  * When Shizuku is installed but not yet authorized, the Activity stays alive until
- * Shizuku's authorization result arrives — {@link Shizuku#requestPermission(int)}
- * starts an asynchronous flow that requires the calling Activity to remain alive.
+ * Shizuku's authorization result arrives — the {@link ShizukuManager} manages the
+ * entire listener lifecycle. The Shizuku authorization UI requires the calling
+ * Activity to remain alive.
  */
 public final class BandResetActivity extends Activity {
     private static final String TAG = "BandResetGPT";
     private static final int REQUEST_ALL = 1;
-    private static final int SHIZUKU_REQUEST_CODE = 0;
     private static final String DENIED_PREFS = "denied_permissions";
     private boolean launched;
     private boolean waitingForShizuku;
-    private Shizuku.OnRequestPermissionResultListener shizukuListener;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setTitle(getString(R.string.app_name));
+
+        // Register Shizuku listeners once per process — idempotent after the first call.
+        ShizukuManager.start(getApplicationContext());
+
         if (ResetService.isActive()) {
             shortToast(R.string.already_running);
             finish();
@@ -53,18 +54,17 @@ public final class BandResetActivity extends Activity {
         super.onResume();
         if (launched || isFinishing() || ResetService.isActive()) return;
 
-        // If we're returning from the Shizuku authorization activity, check the result.
+        // If returning from the Shizuku authorization activity, the
+        // OnRequestPermissionResultListener inside ShizukuManager has already
+        // fired — check the resolved state.
         if (waitingForShizuku) {
-            // Shizuku's own Activity may have finished — check permission state now.
-            if (ShizukuManager.hasPermission()) {
+            waitingForShizuku = false;
+            if (ShizukuManager.isAvailable()) {
                 Log.i(TAG, "SHIZUKU_PERMISSION_GRANTED_ON_RESUME");
-                ShizukuManager.reset(); // clear the probe cache so isAvailable() re-evaluates
-                proceedToService();
             } else {
-                // Still not granted — Shizuku dialog was likely dismissed without granting.
                 Log.i(TAG, "SHIZUKU_PERMISSION_STILL_DENIED_ON_RESUME");
-                proceedToService(); // continue in normal mode
             }
+            proceedToService();
             return;
         }
 
@@ -99,41 +99,27 @@ public final class BandResetActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        if (shizukuListener != null) {
-            try { Shizuku.removeRequestPermissionResultListener(shizukuListener); }
-            catch (Exception ignored) { }
-            shizukuListener = null;
-        }
         super.onDestroy();
     }
 
     /**
      * If Shizuku is installed but not yet authorized, request authorization and
      * wait for the result. Otherwise proceed directly to the foreground service.
+     * <p>
+     * {@link ShizukuManager#requestAuthorization(Activity, Runnable)} handles the
+     * full lifecycle: binder probe, permission check, {@code Shizuku.requestPermission},
+     * and the result callback.  The Activity is kept alive during the flow.
      */
     private void checkShizukuThenProceed() {
         if (launched || isFinishing()) return;
 
         try {
-            if (ShizukuManager.isInstalled(this) && !ShizukuManager.hasPermission()) {
+            if (ShizukuManager.isInstalled(this) && !ShizukuManager.isAvailable()) {
                 Log.i(TAG, "SHIZUKU_PERMISSION_REQUIRED");
                 waitingForShizuku = true;
-                shizukuListener = (requestCode, grantResult) -> {
-                    Log.i(TAG, "SHIZUKU_PERMISSION_RESULT requestCode=" + requestCode
-                            + " grantResult=" + grantResult);
-                    if (requestCode == SHIZUKU_REQUEST_CODE) {
-                        ShizukuManager.reset(); // clear probe cache so isAvailable() re-evaluates
-                        if (shizukuListener != null) {
-                            try { Shizuku.removeRequestPermissionResultListener(shizukuListener); }
-                            catch (Exception ignored) { }
-                            shizukuListener = null;
-                        }
-                        waitingForShizuku = false;
-                        proceedToService();
-                    }
-                };
-                Shizuku.addRequestPermissionResultListener(shizukuListener);
-                Shizuku.requestPermission(SHIZUKU_REQUEST_CODE);
+                ShizukuManager.requestAuthorization(this, () -> {
+                    if (!isFinishing()) proceedToService();
+                });
                 // Do NOT finish — Shizuku needs the Activity alive to show its authorization UI.
                 return;
             }
@@ -146,6 +132,19 @@ public final class BandResetActivity extends Activity {
     private void proceedToService() {
         if (launched || isFinishing()) return;
         launched = true;
+
+        // Try to bind the Shizuku UserService before the controller starts.
+        // This is best-effort — if it fails, the session will fall back to
+        // the normal BluetoothAdapter API.
+        if (ShizukuManager.isAvailable()) {
+            try {
+                ShizukuManager.bindService(getApplicationContext());
+                Log.i(TAG, "SHIZUKU_USER_SERVICE_BIND_REQUESTED");
+            } catch (Exception e) {
+                Log.w(TAG, "SHIZUKU_USER_SERVICE_BIND_FAILED type=" + e.getClass().getSimpleName());
+            }
+        }
+
         try {
             startForegroundService(new Intent(this, ResetService.class));
         } catch (RuntimeException e) {

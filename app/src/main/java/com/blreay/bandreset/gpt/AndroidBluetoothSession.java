@@ -27,7 +27,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.function.Consumer;
 
-import com.blreay.bandreset.gpt.shizuku.BluetoothControlMode;
 import com.blreay.bandreset.gpt.shizuku.ShizukuManager;
 
 /**
@@ -228,10 +227,10 @@ final class AndroidBluetoothSession implements ResetController.Port {
     @Override public boolean disable() {
         requireMainThread();
         // Try Shizuku first — the privileged shell bypasses OEM confirmation dialogs.
-        if (ShizukuManager.isAvailable()) {
+        if (ShizukuManager.isServiceReady()) {
             try {
                 boolean ok = ShizukuManager.disableBluetooth();
-                diagnostic("DISABLE mode=" + ShizukuManager.lastMode() + " ok=" + ok);
+                diagnostic("DISABLE mode=SHIZUKU ok=" + ok);
                 if (ok) return true;
                 // Shizuku command failed; fall through to normal API.
             } catch (Exception e) {
@@ -253,10 +252,10 @@ final class AndroidBluetoothSession implements ResetController.Port {
     @Override public boolean enable() {
         requireMainThread();
         // Try Shizuku first — the privileged shell bypasses OEM confirmation dialogs.
-        if (ShizukuManager.isAvailable()) {
+        if (ShizukuManager.isServiceReady()) {
             try {
                 boolean ok = ShizukuManager.enableBluetooth();
-                diagnostic("ENABLE mode=" + ShizukuManager.lastMode() + " ok=" + ok);
+                diagnostic("ENABLE mode=SHIZUKU ok=" + ok);
                 if (ok) return true;
             } catch (Exception e) {
                 diagnostic("SHIZUKU_ENABLE_EXCEPTION type=" + e.getClass().getSimpleName());
