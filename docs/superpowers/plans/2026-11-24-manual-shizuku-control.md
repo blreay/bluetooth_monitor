@@ -68,8 +68,8 @@ Approved spec: `docs/superpowers/specs/2026-11-24-manual-shizuku-control-design.
 
 - [x] Count actual JUnit failures/tests, verify produced APK/signature and diff hygiene again after the quality corrections: 97 tests passed; debug/release APKs built; release signature verified. Any further source correction must repeat verification.
 - [x] Check adb devices; if available validate actual UI, grant/binder lifecycle, radio ON/OFF without ordinary confirmation, discovery-only list and cleanup. No connected devices: real-device validation skipped, not passed.
-- [ ] Commit/push current `bluetooth_monitor_shizuku` branch after verification; do not merge main or dispatch rolling latest publication. Branch push does not trigger existing CI.
-- [ ] Report actual build/test/device/CI outcomes, APK path and commit/branch once at completion.
+- [x] Commit/push current `bluetooth_monitor_shizuku` branch after verification; implementation commit `ed2b8ba1c235b84bcef459d3d232f7e75a316209` pushed and independently matched to the remote branch ref. No main merge or rolling latest dispatch; branch push does not trigger existing CI.
+- [x] Record actual build/test/device/CI outcomes, APK path and commit/branch in the delivery record below for the final user-facing handoff.
 
 ## Verification record (2026-11-25)
 
@@ -93,4 +93,12 @@ Approved spec: `docs/superpowers/specs/2026-11-24-manual-shizuku-control-design.
 - Parent parsed final JUnit XML: ten suites / 97 tests / zero failures, errors or skipped tests. Original 42 regressions retained; new coverage consists of 41 behavioral tests and 14 source-boundary checks.
 - Parent parsed final lint XML: 21 issues (five Error MissingPermission in the legacy controller/switch, one Fatal ExpiredTargetSdkVersion for retained target32, 15 warnings). No Shizuku/discovery/runner/privileged-command source findings. Lint task exit 0 does not mean a clean lint report; no SDK upgrade or global rule disable.
 - Final APK metadata remains applicationId `com.blreay.bluetoothmonitor`, versionName 1.0, versionCode 1, minSdk31. Release `apksigner verify --verbose --print-certs` verifies v2 with the same RSA2048 certificate SHA-256 recorded above. APKs: `app/build/outputs/apk/debug/app-debug.apk` and `app/build/outputs/apk/release/app-release.apk`.
-- Final `adb devices -l`: no connected devices; real-device/OEM UI, authorization, actual ON/OFF and no-confirmation behavior not executed. `git diff --check`: clean. CI/signing/version settings/wrapper/root build scope unchanged; feature branch is not yet committed/pushed.
+- Final `adb devices -l`: no connected devices; real-device/OEM UI, authorization, actual ON/OFF and no-confirmation behavior not executed. `git diff --check`: clean. CI/signing/version settings/wrapper/root build scope unchanged. This verification checkpoint preceded the commit/push recorded below.
+
+## Delivery record (2026-11-25)
+
+- Implementation commit: `ed2b8ba1c235b84bcef459d3d232f7e75a316209` (`feat: add visible manual Shizuku Bluetooth controls`).
+- Pushed `bluetooth_monitor_shizuku` to `origin` and verified its remote ref exactly matched the implementation commit. The working tree was clean after that push; this documentation-only follow-up records the actual outcome.
+- Final verification: spec PASS, quality APPROVED, 97 JVM tests passed, debug/release built, release signature verified. Existing lint findings remain as detailed above; no device testing performed.
+- Release APK: `app/build/outputs/apk/release/app-release.apk`; local versionCode 1. A higher installed versionCode requires an appropriate build-time run number for cover-install, not uninstalling the app.
+- No main merge, PR, workflow dispatch or rolling latest publication. Existing CI does not trigger on this feature branch. Worktree preserved at `/home/admin/git/bluetooth_monitor_shizuku`.
