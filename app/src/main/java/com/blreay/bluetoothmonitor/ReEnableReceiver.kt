@@ -34,6 +34,11 @@ class ReEnableReceiver : BroadcastReceiver() {
         // onReceive, and a receiver context must not leak into a PendingIntent.
         val app = context.applicationContext
 
+        if (ManualBluetoothInterlock.shared.manualActive) {
+            Log.i(TAG, "manual operation owns Bluetooth; ignoring recovery tick")
+            return
+        }
+
         val pending = PendingResetStore.read(app)
         if (pending == null) {
             // Normal after a success or a give-up: a tick that was already in

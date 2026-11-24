@@ -21,7 +21,7 @@ import android.util.Log
  *
  * Cannot prompt for permissions - there is no UI and Android 10+ blocks
  * starting an Activity from the background. If the grant is missing it logs
- * and gives up; launching the icon once is the only way to grant it.
+ * and gives up; open the app and 点击扫描蓝牙 to request the Nearby grant.
  *
  * Left exported without a signature permission on purpose, so Tasker,
  * MacroDroid and Termux can all trigger it. Worst case for an uninvited
@@ -35,7 +35,7 @@ class TriggerReceiver : BroadcastReceiver() {
             return
         }
         if (!BtPermissions.allGranted(context)) {
-            Log.e(TAG, "Nearby-devices permission missing; launch the app icon once to grant it")
+            Log.e(TAG, "Nearby-devices permission missing; 打开应用并点击扫描蓝牙以申请附近设备权限")
             return
         }
 

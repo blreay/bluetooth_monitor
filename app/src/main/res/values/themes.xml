@@ -1,33 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!--
-      The invisible Activity theme, used by PermissionActivity only.
-
-      MainActivity uses Theme.NoDisplay instead, which creates no window at
-      all. This theme cannot do that - it has to stay resumable long enough
-      to receive onRequestPermissionsResult - so it is translucent, which
-      suppresses the Android 12+ system splash icon and keeps whatever is
-      behind it visible.
-
-      PermissionActivity only ever appears on first run, and it immediately
-      shows the system permission dialog on top, so the residual ~100-300ms
-      of unresponsiveness is not user-visible in practice.
-
-      backgroundDimEnabled=false matters: a translucent Activity dims what is
-      behind it by default, and that dim WOULD be visible.
-
-      windowAnimationStyle=@null removes the Activity transition animation.
-      Transparent system bars stop a flicker when the previous window used
-      different bar colours.
-    -->
-    <style name="Theme.BtReset.Invisible" parent="@android:style/Theme.Translucent.NoTitleBar">
-        <item name="android:windowBackground">@android:color/transparent</item>
-        <item name="android:windowIsTranslucent">true</item>
-        <item name="android:windowNoTitle">true</item>
-        <item name="android:windowContentOverlay">@null</item>
-        <item name="android:windowAnimationStyle">@null</item>
-        <item name="android:backgroundDimEnabled">false</item>
-        <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@android:color/transparent</item>
+    <style name="Theme.BtReset" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowIsTranslucent">false</item>
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:colorAccent">#1565C0</item>
     </style>
 </resources>

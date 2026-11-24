@@ -1,222 +1,161 @@
-# 蓝牙重启 (Bluetooth Band Reset)
+# 蓝牙重启 / Shizuku 蓝牙控制
 
-一个没有界面的 Android 小工具，只做一件事：
+一个有可见操作页面的 Android 小工具。**打开应用只显示页面，不自动扫描、申请权限或重启蓝牙。**
 
-1. 蓝牙没开 → 直接退出
-2. 蓝牙开着 → BLE 扫描 **8 秒**，找 `Xiaomi Smart Band 8 35BA`
-3. 找到了 → 屏幕上闪一行「已找到手环，正在重启蓝牙…」，关闭蓝牙，**等它真的关完**再打开，确认开起来了再退出
-4. 没找到 → 直接退出
+页面提供四个按钮：
 
-**每次运行都会在通知栏留一条结果**，不管找到没找到、成功还是失败。见[看运行结果](#看运行结果)。
+| 按钮 | 行为 |
+|---|---|
+| **申请shizuku权限** | 主动向正在运行的 Shizuku 请求授权；实际授权成功后显示「shizuku授权成功」，并连接高权限服务 |
+| **关闭蓝牙** | 通过 Shizuku 的 shell/root 身份请求关闭蓝牙；不会自动重新开启 |
+| **打开蓝牙** | 通过同一高权限路径请求开启蓝牙 |
+| **扫描蓝牙** | 手动发现附近的 BLE / 经典蓝牙设备，实时显示名称、MAC、RSSI 和发现类型 |
 
-判定"找到"只看 **BLE 扫描结果**，不要求已连接。
+扫描只列出设备，**即使找到目标手环，也不重启、配对或连接设备**。开关按钮不使用普通应用的 `BluetoothAdapter.enable()/disable()`，也不会降级到系统确认弹窗路径。
 
-点图标时**不会有任何窗口**，桌面全程可以正常点击滑动。
+## 使用方法
+
+1. 安装并启动 [Shizuku](https://shizuku.rikka.app/)。可按 Shizuku 的指引使用无线调试、adb 或 root 启动。
+2. 打开本应用，点击 **申请shizuku权限**，在 Shizuku 的授权对话框中允许。
+3. 页面显示 **shizuku授权成功**。高权限服务连接成功后，点击 **关闭蓝牙** 或 **打开蓝牙**。
+4. 点击 **扫描蓝牙**。首次扫描时，系统会请求「附近的设备」权限；允许后才开始本次扫描。
+
+应用通过官方 Shizuku Provider 注册并接收 Binder；授权按钮主动发起权限申请，Binder 尚未到达时会有限等待，不调用私有注册接口。启动页面不会主动申请授权。
+
+Shizuku 授权对话框和首次扫描的「附近的设备」权限框是必要的授权过程，**不是蓝牙开关确认框**。高权限开关不为读取状态额外申请附近设备权限。
+
+Shizuku 停止、授权拒绝/撤销、服务连接失败或系统拒绝执行时，页面会显示原因；不会静默改用普通开关 API。手机重启后通常需要先重新启动 Shizuku。
+
+如果高权限服务在连接超时前从未返回 Binder，官方 SDK 的本地连接可能无法安全释放。应用会隔离这次未完成连接，不继续创建新连接或冒认迟到的旧服务；页面若提示重启应用，请在系统设置中**强行停止本应用，再重新打开**，不需要卸载。这是异常连接状态的安全恢复步骤，不是每次授权都需要；扫描功能仍独立于 Shizuku。
+
+### 开关结果如何理解
+
+- **请求已提交**：高权限命令已经返回，不代表蓝牙硬件完成了异步切换。
+- 已有「附近的设备」权限时，应用会在有限时间内检查真实状态，确认 ON/OFF 后才显示已打开/已关闭。
+- 没有读取状态的权限时，会明确说明无法确认最终状态；可查看系统蓝牙开关，或授予扫描所需权限后再次操作。
+- 超时、错误或 OEM 限制会显示失败/未确认，不会冒充成功或回退到普通 API。
+
+手动开关会取消本应用遗留的自动恢复链，并使旧的在途重置扫描失效，避免刚手动关闭就被旧闹钟重新打开。开关和扫描不会同时运行。
+
+### 扫描结果如何理解
+
+- 先进行约 **8 秒 BLE 扫描**，再进行最多 **15 秒经典蓝牙发现**。结果实时更新，总时长约 23 秒以内。
+- 每次实际开始新扫描时清空上一次结果；结束后保留本次结果。
+- 同一 MAC 只列一次，重复发现更新 RSSI；同一设备被 BLE 和经典发现时合并类型。没有名称时显示「未知设备」。
+- 列表只包含**本次实际发现**的设备，不把已配对缓存混作扫描结果。
+- 蓝牙未开启/正在切换时，扫描只提示先打开，不会隐式切换蓝牙。旧自动恢复尚未完成时，扫描提示等待，不中断必要的恢复。
+- 离开页面会停止扫描。打开、重开页面或旋转屏幕不会自行开始新的扫描。
+- 单个扫描阶段失败时保留已有结果，并说明哪个阶段未完成。
+
+BLE 外设不广播、经典设备未进入可发现模式时可能扫不到。**设置里能看到已配对设备，不代表它当前能被扫描发现。**
+
+Android 还限制短时间内频繁启动 BLE 扫描；超额可能静默不给结果。错误码 2 是扫描客户端注册失败，不是该限流。零设备也可能只是附近没有可发现设备，不能仅凭零结果认定限流。
 
 ## 下载
 
-固定地址（每次 push 到 main 自动更新，签名不变，可直接覆盖安装）：
+`main` 每次 push 自动更新固定下载地址，签名不变，可以覆盖安装：
 
 ```
 https://github.com/blreay/bluetooth_monitor/releases/download/latest/bt-reset.apk
 ```
 
-安装时需要允许"未知来源"。因为签名固定，以后每次更新都是覆盖安装，**不会丢掉已授予的权限**。
+**功能分支的修改不会自动更新这个 `latest` APK。** 工作流只在 `main` push 或手动 dispatch 时运行；使用分支代码测试时需自行构建，或等待该功能合入 `main`。
 
-## 首次使用（只需一次）
+安装时需要允许「未知来源」。同签名覆盖安装可保留已经授予的应用权限。
 
-1. 点桌面图标 **蓝牙重启**
-2. 系统弹出"允许访问附近的设备？" → **允许**
-3. 系统可能再弹一个"允许发送通知？" → **允许**。拒绝也能用，只是通知退化成 Toast
-4. 之后点图标**不会出现任何窗口**。每次运行的结果都在通知栏里；命中手环和蓝牙恢复这两件事还会各闪一行 Toast（约 2 秒自动消失）
+## 页面入口
 
-## MIUI / HyperOS 必做配置
+以下入口现在都只打开控制页面，不启动自动扫描：
 
-**这两项不做，工具就是坏的。** 不是"可能失效"，是失效。
+- 点击桌面图标 **蓝牙重启**。
+- Tasker / MacroDroid / Automate 发 Activity Intent：
 
-| 设置项 | 路径 | 不做会怎样 |
-|---|---|---|
-| **开关蓝牙** | 设置 → 应用设置 → 应用管理 → 蓝牙重启 → 权限管理 → **开关蓝牙** → 改成**允许** | 默认是"询问"，每次关蓝牙和开蓝牙都会弹框等你手点。你要是不在 2 分钟内点完，工具会放弃 |
-| **自启动** | 同上 → **自启动** → 开 | 关着的话系统闹钟拉不起进程。重开蓝牙**完全**靠闹钟驱动，所以蓝牙会被留在关闭状态 |
-| 省电策略 | 同上 → 省电策略 → 无限制 | 快段（扫描那 8 秒）可能被提前杀掉。不致命，但会白跑一趟 |
-| 附近的设备 | 同上 → 权限管理 → 附近的设备 → 允许 | 扫描和开关蓝牙都需要。首次点图标会弹系统框，点允许即可 |
+  ```
+  Action:   com.blreay.bluetoothmonitor.action.RUN
+  Package:  com.blreay.bluetoothmonitor
+  Class:    com.blreay.bluetoothmonitor.MainActivity
+  ```
 
-HyperOS 上入口名称可能略有出入，在"应用信息"页里找"权限管理"和"自启动"。
+- adb：
 
-**关于"开关蓝牙"这个权限：** 它不是 Android 权限，是 MIUI 自己加的，所以应用无法在代码里申请或绕过。Android 官方对程序化开关蓝牙的豁免清单只有 Device Owner、Profile Owner 和系统应用三类身份，`BLUETOOTH_PRIVILEGED` 是 `signature|privileged` 级别，第三方应用拿不到。这一项只能你手动设。
+  ```bash
+  adb shell am start -n com.blreay.bluetoothmonitor/.MainActivity
+  ```
 
-## 四种触发方式
+普通后台应用启动 Activity 仍受 Android 10+ 的后台启动限制。
 
-**1. 桌面图标** —— 直接点。
+## 兼容：显式广播自动重置手环
 
-**2. Tasker / MacroDroid / Automate** —— 发一个 Intent：
-
-```
-Action:   com.blreay.bluetoothmonitor.action.RUN
-Package:  com.blreay.bluetoothmonitor
-Class:    com.blreay.bluetoothmonitor.MainActivity
-```
-
-这类工具有后台启动 Activity 的特权，所以能调起来。纯后台的普通应用不行（Android 10+ 限制）。
-
-**3. adb / Termux**
-
-```bash
-adb shell am start -n com.blreay.bluetoothmonitor/.MainActivity
-```
-
-**4. 广播**
+为了保留已有自动化脚本，下面这个**独立广播入口**仍执行原有逻辑，**不是页面扫描按钮的行为**：
 
 ```bash
 adb shell am broadcast -a com.blreay.bluetoothmonitor.action.RESET_IF_PRESENT
 ```
 
-广播路径的扫描窗口是 6 秒（前三种走 Service 的路径是 8 秒），因为 `goAsync()` 只有约 10 秒预算。
+广播入口使用 6 秒 BLE 扫描，命中 `Xiaomi Smart Band 8 35BA` 后关闭蓝牙，再交由状态驱动的闹钟链重新开启。它不直接连接手环，连接恢复由 Mi Fitness 等原应用自行完成。
 
-## 看运行结果
+此兼容路径仍使用原来的普通应用蓝牙接口，**不具备新页面 Shizuku 开关的高权限保证**。如果不需要自动重置，直接使用页面上的四个按钮即可，不要发送该广播。手动操作期间旧重置扫描不能再切换蓝牙。
 
-**每次运行都会发一条通知**，不管有没有找到手环、成功还是失败。这是不接电脑时主要的诊断手段。
+### 旧广播路径的 MIUI / HyperOS 设置
 
-通知走「运行结果」渠道，是静默的（不响铃、不弹横幅），只在通知栏和状态栏留一个图标。第二次运行覆盖第一次，不会堆一屏。
+下面是**旧自动重置路径**的要求，不是 Shizuku 开关的前提：
 
-正文固定带一行扫描事实：
-
-```
-扫描 8.0/8.0 秒 · 看到 14 个设备（9 个带广播名）
-```
-
-**这行数字就是判断依据**，因为两种故障在屏幕上长得一模一样，只有设备数能分开：
-
-| 通知里看到 | 说明 |
+| 设置项 | 作用 |
 |---|---|
-| 一个设备都没扫到 | 多半被系统限流了。Android 每 30 秒只放行 5 次扫描，**超了之后静默不给结果、也不报错**。反复点图标测试必撞，等 30 秒再点 |
-| 扫到十几个设备，但没有目标 | 扫描本身是好的，手环没在广播 —— 它多半正连着手机 |
-| 扫描只跑了一两秒就结束 | 进程被系统杀了，去设「省电策略 = 无限制」 |
-| 看到疑似手环但没匹配上 | 手环换了广播名，通知里会写它实际叫什么，据此改 `BandMatcher.kt` |
-| **完全没有任何通知** | 进程在发通知之前就死了，或者通知权限被关了 |
+| 应用权限管理 → 开关蓝牙 → 允许 | 避免旧普通应用开关路径被 MIUI 确认框拦住 |
+| 自启动 → 开 | 允许旧恢复闹钟在进程被回收后继续重新开启蓝牙 |
+| 省电策略 → 无限制 | 减少旧后台扫描被提前终止 |
+| 附近的设备 → 允许 | 允许旧广播扫描以及读取/控制蓝牙 |
 
-命中手环和蓝牙恢复这两件事**另外**还会各弹一条 Toast（约 2 秒自动消失），也是无条件的。看到第一条没看到第二条，说明重开失败。
+旧恢复链只在观察到 `STATE_OFF` 后请求开启，不在 `STATE_TURNING_OFF` 时盲目开启；最多 120 跳后放弃。它的状态落盘在 SharedPreferences 中，进程被杀后由 alarm 继续。
 
-**想让每一个结局都弹 Toast**（包括"没找到""蓝牙本来就没开"），加一个 extra：
+`targetSdk` 暂时保留 32，以保持**这条旧路径**的兼容性。新页面的开关使用 Shizuku UserService，不以普通应用的 targetSdk 豁免作为控制方式；不要为消除 lint 警告直接升级 SDK 而破坏旧路径。
+
+### 旧广播运行结果
+
+旧广播的每次运行都会在「运行结果」通知渠道留一条静默结果；关闭通知时退化为 Toast。正文附带扫描时长、设备数和失败原因，命中手环与恢复成功另有 Toast。
+
+想让每个旧广播结局都弹 Toast：
 
 ```bash
-adb shell am start -n com.blreay.bluetoothmonitor/.MainActivity --ez toast true
 adb shell am broadcast -a com.blreay.bluetoothmonitor.action.RESET_IF_PRESENT --ez toast true
 ```
 
-**接电脑看日志**：
-
-```bash
-adb logcat -s BtReset.Main BtReset.Perm BtReset.Svc BtReset.Trigger BtReset.Ctrl BtReset.Switch BtReset.Sched BtReset.Store BtReset.ReEnable BtReset.Notify BtReset.Notif
-```
-
-日志含义：
-
-| 日志 | 含义 |
-|---|---|
-| `Bluetooth is not ON (state=...)` | 蓝牙没开，或者正在开关过程中，按设计直接退出 |
-| `missing permission(s) [...]` | 权限没给，点一次图标授权 |
-| `seen AA:BB:... name=...` | 扫到的每个设备（debug 级） |
-| `band is visible: ...` | 命中手环，紧接着会弹 Toast |
-| `scan window elapsed; band is not visible` | 扫了 8 秒没看到手环 |
-| `disable() accepted; arming the state-driven re-enable chain` | 关闭已被系统接受，开始等它真的关完 |
-| `system refused to turn Bluetooth off` | MIUI 拒绝了 `disable()`，蓝牙仍是开着的 |
-| `tick attempts=N phase=... state=... -> ...` | **慢段每一跳的完整决策**，排查重开问题看这个 |
-| `enable() accepted; the next tick confirms STATE_ON` | 已请求开启，下一跳验证 |
-| `enable() returned false; the next tick will retry` | 这次被拒了，一秒后自动再试（最多 120 次） |
-| `Bluetooth is back on after N tick(s)` | **成功**，N 就是总共花了几秒 |
-| `giving up (GIVE_UP_NEVER_TURNED_OFF) ...` | 2 分钟内蓝牙一直没关成。通常是 MIUI 弹框你点了拒绝，或没设"开关蓝牙"权限。**蓝牙还开着，没坏** |
-| `giving up (GIVE_UP_NEVER_TURNED_BACK_ON) ...` | **蓝牙关掉了但没能开回来，需要手动开一次**。看前面 `enable()` 的日志判断是被谁拒的 |
-| `exact alarms not permitted` | 闹钟降级为非精确，重开会变慢 |
-| `BLE scan failed errorCode=2` | **扫描客户端注册失败**，全系统同时扫描的应用太多了。这**不是**限流 —— 限流根本不会走到这个回调，见下 |
-| `posted: <标题>` | 通知发出去了 |
-| `notifications disabled; falling back to a toast` | 通知权限被关了，改用 Toast 兜底 |
-
-## 三个已知限制
-
-**1. 手环已连接时扫不到 —— 而"设置里能看到"不等于"在广播"。** BLE 外设一旦连上就停止广播。设置 → 蓝牙里那个列表是**已配对设备**，配对记录存在本机，跟手环此刻有没有在发广播是两回事。所以你在设置里明明看得到它、扫描却扫不到，是正常现象，不是 bug。通知里会直接写明手环在不在已配对列表里。它的用途是手环掉线但在附近时，强制重启蓝牙让 Mi Fitness 重连。
-
-**2. Android 限制每 30 秒最多 5 次 BLE 扫描，而且超限时是完全静默的。** 第 6 次 `startScan` 会被正常接受、不抛异常、**不回调 `onScanFailed`**，然后拿不到任何结果。表现就是"扫了 8 秒，一个设备都没看到"。反复点图标测试必然撞上，等 30 秒再点即可 —— 通知里的设备数为 0 就是这个情况。
-
-（`BLE scan failed errorCode=2` 是另一码事：扫描客户端注册失败，说明全系统同时在扫描的应用太多，跟限流无关。）
-
-**3. `targetSdk` 被故意钉在 32。** Android 13 起，targetSdk ≥ 33 的应用调用 `BluetoothAdapter.enable()/disable()` 一律返回 `false`。这个限制按 targetSdkVersion 而非系统版本判定，所以钉在 32 是让"程序化关蓝牙"在 Android 13/14/15/16 上继续可用的唯一办法 —— Tasker 的 `TaskerSettings` 和 MacroDroid 的 Helper App 用的是同一手法。
-
-**不要为了消除 lint 警告而升级 targetSdk，那会静默废掉这个应用唯一的函数。** Android 没有替代 API：`ACTION_REQUEST_ENABLE` 是用户确认弹窗，而关蓝牙连这个都没有。
-
-补充：官方 javadoc 列出的豁免身份只有 Device Owner、Profile Owner 和系统应用三类。**没有任何第三方可申请的权限能免掉这个限制**，所以钉 targetSdk 是唯一办法，不是权宜之计。
-
-## 换手环 / 改目标设备
-
-改 `app/src/main/java/com/blreay/bluetoothmonitor/BandMatcher.kt` 顶部三个常量：
-
-```kotlin
-const val TARGET_NAME = "Xiaomi Smart Band 8 35BA"
-const val TARGET_NAME_PREFIX = "Xiaomi Smart Band"
-const val TARGET_MAC_SUFFIX = "35:BA"
-```
-
-`35BA` 是手环 MAC 的后两个字节（小米手环把 MAC 尾字节附在广播名里）。查自己的 MAC：设置 → 蓝牙 → 已配对设备，或者跑一次工具看 `seen ...` 日志。
-
-改完 push，GitHub Actions 会自动出新 APK。
+修改旧广播的目标手环：编辑 `app/src/main/java/com/blreay/bluetoothmonitor/BandMatcher.kt` 中的 `TARGET_NAME`、`TARGET_NAME_PREFIX` 和 `TARGET_MAC_SUFFIX`。这些匹配常量**不会过滤新页面的设备列表**。
 
 ## 自己构建
 
-需要 JDK 17、Android SDK（platform 34 + build-tools 34.0.0）：
+需要 JDK 17、Android SDK platform 34 + build-tools 34.0.0：
 
 ```bash
-./gradlew assembleRelease
-# 产物：app/build/outputs/apk/release/app-release.apk
+./gradlew testReleaseUnitTest assembleDebug assembleRelease
+# debug：app/build/outputs/apk/debug/app-debug.apk
+# release：app/build/outputs/apk/release/app-release.apk
 ```
 
-签名用的 `keystore/release.jks` 就在仓库里，凭据在 `gradle.properties`。这个密钥只用来签这一个私人工具，不代表任何身份，公开提交是故意的 —— 目的是让 APK 签名跨构建保持一致。
+release 签名使用仓库里的 `keystore/release.jks` 和 `gradle.properties`。该密钥仅用于这个私人工具，公开提交是为了保持跨构建签名一致，不代表其他身份。
+
+本开发环境已有缓存工具链，默认 JAVA_HOME 不适用时使用：
+
+```bash
+source /home/admin/.cache/btreset-build/env.sh
+"$BTRESET_GRADLE" -p /home/admin/git/bluetooth_monitor_shizuku \
+  testReleaseUnitTest assembleDebug assembleRelease lintDebug --stacktrace
+```
+
+本地默认 versionCode 为 1，CI 用 `GITHUB_RUN_NUMBER + 1`。覆盖安装已有更高版本号时，需要构建时提供合适的运行号；不要为测试而卸载导致权限丢失。
 
 ## 工作原理
 
-流程按"时长能不能预测"切成两段。
+- **MainActivity**：正常可见页面，只由按钮触发授权、开关和扫描。
+- **Shizuku 客户端**：真实授权检查、Binder 生命周期和专用 UserService 连接。
+- **高权限 UserService**：shell/root UID 下执行固定 `/system/bin/svc bluetooth enable|disable`，通过系统管理接口控制蓝牙；没有普通 API fallback。
+- **独立 discovery scanner**：BLE 和经典发现、MAC 去重、实时设备列表、超时与生命周期清理，不包含手环匹配/重置。
+- **手动操作门闩**：使旧在途自动重置失效，防止旧回调/恢复 alarm 抢回手动控制。
+- **TriggerReceiver / ReEnableReceiver**：保留独立的旧广播自动化与状态驱动恢复协议。
 
-```
-点图标 → MainActivity (Theme.NoDisplay, onCreate 里立刻 finish)
-           │  ← 不创建窗口，不拿输入焦点，桌面全程可点
-           ├─ 权限缺失 → PermissionActivity (全项目唯一的窗口, 仅首次)
-           │                └─ 授权 → startService
-           └─ 权限齐全 → startService
-                          ↓
-                       ResetService → BandResetController      【快段 ≤8 秒】
-                          ├─ 无适配器 / 蓝牙非 ON / 权限缺失 → 退出
-                          ├─ BLE 扫描 8s
-                          │    ├─ 未命中 → 退出
-                          │    └─ 命中 → Toast「已找到手环…」
-                          │              → disable()
-                          │                  ├─ false → 退出（不布置闹钟）
-                          │                  └─ true  → 状态落盘 WAITING_OFF
-                          │                             → 布置 +1 秒闹钟
-                          │                             → stopSelf
-                          ↓ 进程从这里开始随时可以被杀，状态在磁盘上
-                       ReEnableReceiver  每秒一跳               【慢段 ≤120 跳】
-                          decide(getState(), phase, attempts)
-                          ├─ ENABLE_AND_RETRY → enable() + 落盘 + 再排一跳
-                          ├─ RETRY            → attempts+1 + 再排一跳
-                          ├─ DONE_RESTORED    → Toast「蓝牙已恢复」+ 清状态 + 取消闹钟
-                          └─ GIVE_UP_*        → 记日志 + 清状态 + 取消闹钟
-```
+历史自动重置设计：`docs/superpowers/specs/2026-11-21-bluetooth-band-reset-v2-design.md`。
 
-广播入口（`sendBroadcast`）走 `TriggerReceiver.goAsync()` 内联跑同一个快段（扫描窗口 6 秒），之后共用同一条慢段。它不调 `startService` —— Android 8+ 禁止后台应用启动 Service。
+新手动页面设计：`docs/superpowers/specs/2026-11-24-manual-shizuku-control-design.md`。
 
-### 两条不变量
-
-**1. 只在 `getState() == STATE_OFF` 时调 `enable()`，绝不在 `STATE_TURNING_OFF` 期间调。**
-
-`disable()` 返回 `true` 只表示"开始关了"，不表示"关完了"。官方文档明写 `isEnabled()` 等价于 `getState() == STATE_ON`，所以蓝牙正在关的那段时间里 `isEnabled()` 已经是 `false` —— 拿它当"需要重开"的判据，就会在关到一半时调 `enable()`，撞上文档说的 "immediate problem" 被拒。这正是上一版蓝牙关不回来的原因。
-
-**2. 只有 `disable()` 返回 `true` 之后才布置闹钟链。** 否则 MIUI 拦截时，我们会去开一个本来就开着的蓝牙。
-
-### 为什么是每秒一跳的闹钟，不是定时器
-
-因为**要等的时长不可预测**：MIUI 会先弹框等你手点，然后蓝牙还要优雅断开所有已连接设备。定时器只能猜，猜错了就是上一版的结果。闹钟链不猜 —— 它每秒重新读一次真实状态，读到 `STATE_OFF` 才动手，最多 120 跳（2 分钟）后自己放弃。
-
-120 这个上限特意放得比"一个人读完弹框并点下允许"所需的时间更宽。设小了会更糟：状态机先放弃，然后蓝牙才关掉，就再也开不回来了。
-
-慢段的状态存在 SharedPreferences 里而不是内存里，因为每一跳都可能是系统重新拉起进程后的第一次执行。这也意味着**MIUI「自启动」必须开着**。
-
-设计文档：`docs/superpowers/specs/2026-11-21-bluetooth-band-reset-v2-design.md`
+构建、JVM 测试不能代替真机验证。尤其需要在实际 Shizuku / MIUI / HyperOS 上确认权限流程、真实 ON/OFF 状态以及开关过程没有普通确认框。

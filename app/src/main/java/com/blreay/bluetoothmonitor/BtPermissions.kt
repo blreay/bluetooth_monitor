@@ -12,9 +12,9 @@ import android.content.pm.PackageManager
  * required and the legacy BLUETOOTH / BLUETOOTH_ADMIN permissions do not
  * apply.
  *
- * These cannot be granted silently at install time. The launcher-icon path
- * prompts once; the broadcast path cannot prompt from the background and
- * simply gives up.
+ * These cannot be granted silently at install time. The scan button requests
+ * missing grants; opening the UI and manual Shizuku toggles never request them.
+ * The legacy broadcast cannot prompt from the background and simply gives up.
  */
 object BtPermissions {
 

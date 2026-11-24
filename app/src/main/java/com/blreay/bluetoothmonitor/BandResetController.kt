@@ -86,6 +86,16 @@ class BandResetController(private val context: Context) {
      *        identically and neither has to know how the other was invoked.
      */
     fun run(scanTimeoutMs: Long, wantsToast: Boolean, callback: Callback) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            Handler(Looper.getMainLooper()).post { run(scanTimeoutMs, wantsToast, callback) }
+            return
+        }
+        val token = ManualBluetoothInterlock.shared.legacyToken()
+        if (token == null) {
+            Log.i(TAG, "manual operation active; rejecting legacy reset")
+            callback.onResult(Result.ERROR)
+            return
+        }
         try {
             val adapter = BluetoothSwitch.adapter(context)
             if (adapter == null) {
@@ -114,7 +124,7 @@ class BandResetController(private val context: Context) {
                 emit(callback, wantsToast, Result.ERROR)
                 return
             }
-            Session(adapter, scanner, wantsToast, callback).start(scanTimeoutMs)
+            Session(adapter, scanner, wantsToast, callback, token).start(scanTimeoutMs)
         } catch (t: Throwable) {
             Log.e(TAG, "controller failed before scanning", t)
             emit(callback, wantsToast, Result.ERROR)
@@ -160,9 +170,23 @@ class BandResetController(private val context: Context) {
         private val scanner: BluetoothLeScanner,
         private val wantsToast: Boolean,
         private val callback: Callback,
+        private val token: Long,
     ) {
         private val handler = Handler(Looper.getMainLooper())
         private var settled = false
+
+        private fun current(): Boolean {
+            if (settled) return false
+            if (!ManualBluetoothInterlock.shared.isLegacyCurrent(token)) {
+                teardown()
+                settled = true
+                Log.i(TAG, "legacy scan invalidated by a manual operation")
+                // Terminal callback still releases goAsync()/stops the service, without a stale notification.
+                callback.onResult(Result.ERROR)
+                return false
+            }
+            return true
+        }
 
         // --- what the scan actually observed, for the run-result notification.
         // All of it is cheap to collect while the scan is running and
@@ -180,7 +204,7 @@ class BandResetController(private val context: Context) {
         private var matchedLabel: String? = null
 
         private val onTimeout = Runnable {
-            if (settled) return@Runnable
+            if (!current()) return@Runnable
             Log.i(TAG, "scan window elapsed; band is not visible")
             teardown()
             emit(Result.NOT_FOUND)
@@ -188,7 +212,11 @@ class BandResetController(private val context: Context) {
 
         private val scanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                if (settled) return
+                if (Looper.myLooper() != Looper.getMainLooper()) {
+                    handler.post { onScanResult(callbackType, result) }
+                    return
+                }
+                if (!current()) return
                 val mac = result.device?.address
                 val name = advertisedName(result)
                 Log.d(TAG, "seen $mac name=${name ?: "<none>"}")
@@ -201,17 +229,26 @@ class BandResetController(private val context: Context) {
                 // Before disable(), so the message appears even when MIUI then
                 // refuses the toggle. It is also the moment the user asked to
                 // be told about.
+                if (!current()) return
                 Notifier.bandFound(context)
                 cycleBluetooth()
             }
 
             override fun onBatchScanResults(results: MutableList<ScanResult>) {
-                if (settled) return
+                if (Looper.myLooper() != Looper.getMainLooper()) {
+                    handler.post { onBatchScanResults(results) }
+                    return
+                }
+                if (!current()) return
                 results.forEach { onScanResult(ScanSettings.CALLBACK_TYPE_ALL_MATCHES, it) }
             }
 
             override fun onScanFailed(errorCode: Int) {
-                if (settled) return
+                if (Looper.myLooper() != Looper.getMainLooper()) {
+                    handler.post { onScanFailed(errorCode) }
+                    return
+                }
+                if (!current()) return
                 Log.e(TAG, "BLE scan failed errorCode=$errorCode")
                 if (errorCode == SCAN_FAILED_APPLICATION_REGISTRATION_FAILED) {
                     // Scan client registration failed, i.e. too many scanners
@@ -229,6 +266,7 @@ class BandResetController(private val context: Context) {
         }
 
         fun start(scanTimeoutMs: Long) {
+            if (!current()) return
             // Recorded before startScan so that even a throwing startScan still
             // reports a coherent set of facts rather than zeros.
             windowMs = scanTimeoutMs
@@ -348,6 +386,7 @@ class BandResetController(private val context: Context) {
         }
 
         private fun cycleBluetooth() {
+            if (!current()) return
             if (!BluetoothSwitch.disable(adapter)) {
                 // Bluetooth never began turning off, so nothing must be armed.
                 // Arming a chain here would eventually enable() a radio that
@@ -361,13 +400,14 @@ class BandResetController(private val context: Context) {
             // and calling enable() here is exactly what broke v1. Arm the
             // chain and let it wait for a real STATE_OFF.
             Log.i(TAG, "disable() accepted; arming the state-driven re-enable chain")
+            if (!current()) return
             PendingResetStore.arm(context, wantsToast)
             ReEnableScheduler.armNextTick(context)
             emit(Result.RESET_TRIGGERED)
         }
 
         private fun emit(result: Result) {
-            if (settled) return
+            if (!current()) return
             settled = true
             // Delegates to the controller's emit so the toast, the notification
             // and the callback cannot drift apart. All this one adds is the

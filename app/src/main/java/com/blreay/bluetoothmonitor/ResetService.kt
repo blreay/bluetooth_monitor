@@ -7,18 +7,16 @@ import android.os.IBinder
 import android.util.Log
 
 /**
- * Runs the fast phase for the launcher-icon path.
+ * Retained legacy fast-phase service. The manual launcher UI never starts it.
  *
  * Started, not foreground: a foreground Service would put a notification in
  * the status bar, and Android 12+ throws
  * ForegroundServiceStartNotAllowedException when a background app starts one
  * - which would break the sendBroadcast entry point outright.
  *
- * Being started from [MainActivity] while it is in the foreground is what
- * makes this legal, and the fast phase is bounded at 8s, well inside the
- * window Android 8+ gives a backgrounded app's services before stopping
- * them. If MIUI does reclaim it mid-scan, nothing has been armed yet and
- * Bluetooth is still on - there is no half-state to recover from.
+ * Callers must obey the platform's background-service restrictions. The fast
+ * phase is bounded at 8s. If MIUI reclaims it mid-scan, nothing has been armed
+ * yet and Bluetooth is still on - there is no half-state to recover from.
  *
  * The slow phase is not here. It belongs to [ReEnableReceiver] and survives
  * this Service being stopped, which is the whole reason it was split out.
@@ -56,8 +54,7 @@ class ResetService : Service() {
         const val SCAN_TIMEOUT_MS = 8_000L
 
         /**
-         * The one way to start the fast phase, shared by [MainActivity] and
-         * [PermissionActivity] so they cannot drift apart.
+         * Explicit legacy service entry. Not used by the manual UI.
          */
         fun start(context: Context, wantsToast: Boolean) {
             val intent = Intent(context, ResetService::class.java)

@@ -1,37 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!--
-      neverForLocation is what removes the ACCESS_FINE_LOCATION requirement:
-      we want the band's identity, not a location proxy. minSdk 31 means the
-      legacy BLUETOOTH / BLUETOOTH_ADMIN install-time permissions are not
-      needed either.
-    -->
+    <!-- minSdk 31: Nearby devices, not location. Manual toggles do not request these. -->
     <uses-permission
         android:name="android.permission.BLUETOOTH_SCAN"
         android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <!--
-      Granted by default at targetSdk 32. Android 13's deny-by-default only
-      applies to apps targeting 33+. Checked at runtime anyway via
-      canScheduleExactAlarms(); if it is missing the re-enable chain falls
-      back to an inexact alarm and says so loudly in the log.
-    -->
+    <!-- Legacy recovery uses exact alarms, with an inexact fallback when unavailable. -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-    <!--
-      The run-result notification is the app's only durable output: every
-      failure path used to be silent, so there was no way to tell a working
-      run from a broken one without a computer attached.
-
-      Not enforced as a runtime permission at targetSdk 32 - Android 13's
-      POST_NOTIFICATIONS prompt only applies to apps targeting 33+. For an app
-      targeting 32 the system shows the prompt itself the first time a
-      notification channel is created after an activity starts, so the grant
-      still happens, just driven by the system instead of by us. Declared
-      anyway because it states the intent and is what a future targetSdk bump
-      would need. RunNotification checks areNotificationsEnabled() and falls
-      back to a Toast when it is off.
-    -->
+    <!-- Legacy broadcast outcomes use notifications; target32 leaves the prompt to the system. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <uses-feature
@@ -43,80 +20,38 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
-        android:supportsRtl="false">
+        android:supportsRtl="false"
+        android:theme="@style/Theme.BtReset">
 
-        <!--
-          The launcher icon, and nothing else. It dispatches and finishes
-          inside onCreate().
-
-          Theme.NoDisplay means the system never creates a window for it, so
-          it never takes input focus. v1 used a translucent theme and stayed
-          alive for seconds, which kept the home screen visible but dead to
-          touch - the jank this replaces. NoDisplay requires finish() before
-          onResume(), which is exactly what MainActivity does.
-
-          A launcher icon requires an Activity: launchers enumerate
-          MAIN/LAUNCHER activities, and a Service never appears on the home
-          screen.
-
-          excludeFromRecents and an empty taskAffinity keep it out of the
-          recents list and stop it creating a visible task.
-
-          exported=true is required: it is the launcher target and the entry
-          point for Tasker / MacroDroid / Automate / `am start`.
-        -->
+        <!-- MAIN and RUN open a normal visible task; neither starts a Bluetooth operation. -->
         <activity
             android:name=".MainActivity"
-            android:excludeFromRecents="true"
             android:exported="true"
-            android:launchMode="singleTop"
-            android:taskAffinity=""
-            android:theme="@android:style/Theme.NoDisplay">
+            android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- For automation tools that prefer an explicit action. -->
             <intent-filter>
                 <action android:name="com.blreay.bluetoothmonitor.action.RUN" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
-        <!--
-          The only window this app ever creates, and it only appears on first
-          run - the grant persists across launches and across overwrite
-          installs, because the signing key is fixed.
+        <!-- Protection for binder delivery, not a permission granted to this application. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
-          Separate from MainActivity because NoDisplay cannot survive to
-          onRequestPermissionsResult.
-
-          exported=false: reached only by our own startActivity from
-          MainActivity.
-        -->
-        <activity
-            android:name=".PermissionActivity"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:taskAffinity=""
-            android:theme="@style/Theme.BtReset.Invisible" />
-
-        <!--
-          Runs the fast phase for the launcher-icon path. Started, not
-          foreground: a foreground Service would show a notification, and
-          Android 12+ blocks background apps from starting one.
-
-          exported=false: reached only by our own startService.
-        -->
+        <!-- Retained legacy service; the manual UI never starts it. -->
         <service
             android:name=".ResetService"
             android:exported="false" />
 
-        <!--
-          exported=true with no permission guard, on purpose, so Tasker /
-          MacroDroid / Termux can trigger it. Worst case for an uninvited
-          caller is one extra Bluetooth cycle.
-        -->
+        <!-- Existing automation protocol: an explicit target-detect-and-reset request. -->
         <receiver
             android:name=".TriggerReceiver"
             android:exported="true">
@@ -125,12 +60,7 @@
             </intent-filter>
         </receiver>
 
-        <!--
-          exported=false: reached only by our own explicit PendingIntent.
-          Manifest-declared (not runtime-registered) so the system can start
-          the process to deliver the alarm after MIUI has reclaimed it.
-          No intent-filter needed - the PendingIntent is explicit.
-        -->
+        <!-- Manifest declaration lets the durable legacy alarm restart a reclaimed app process. -->
         <receiver
             android:name=".ReEnableReceiver"
             android:exported="false" />

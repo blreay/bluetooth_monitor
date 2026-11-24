@@ -19,8 +19,8 @@ android {
         minSdk = 31
         // PINNED TO 32 ON PURPOSE.
         // Android 13 made BluetoothAdapter.enable()/disable() return false for
-        // anything targeting API 33+. This app's only function depends on them.
-        // Do not raise this without replacing the entire toggle mechanism.
+        // anything targeting API 33+. The legacy broadcast recovery still uses
+        // them; manual toggles instead run through the Shizuku UserService.
         targetSdk = 32
         versionCode = autoVersionCode
         versionName = "1.0"
@@ -44,6 +44,10 @@ android {
         }
     }
 
+    buildFeatures {
+        aidl = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -63,5 +67,7 @@ android {
 }
 
 dependencies {
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")
 }
