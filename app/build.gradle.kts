@@ -1,3 +1,10 @@
+import java.io.File
+import java.security.KeyStore
+import java.security.MessageDigest
+import java.security.PrivateKey
+import java.security.cert.X509Certificate
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -8,19 +15,36 @@ plugins {
 val ciRunNumber: Int? = providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull()
 val autoVersionCode: Int = (ciRunNumber ?: 0) + 1
 
-fun signingProp(name: String): String = providers.gradleProperty(name).orNull ?: ""
+// Private signing material stays outside the repository. Missing or unreadable
+// properties are tolerated here so tests/debug work without release credentials.
+val signingPropertiesFile = File(
+    providers.environmentVariable("BT_NOGUI_SIGNING_PROPERTIES").orNull
+        ?: File(System.getProperty("user.home"), ".local/share/bluetooth-monitor-nogui/signing.properties").path
+)
+val noguiSigningProperties: Properties? = runCatching {
+    Properties().apply {
+        signingPropertiesFile.inputStream().use { load(it) }
+    }
+}.getOrNull()
+
+fun noguiSigningProp(name: String): String = noguiSigningProperties?.getProperty(name).orEmpty()
+
+val noguiStoreFile: File? = noguiSigningProp("BT_NOGUI_STORE_FILE").takeIf { it.isNotBlank() }?.let {
+    val path = File(it)
+    if (path.isAbsolute) path else File(signingPropertiesFile.absoluteFile.parentFile, it)
+}
 
 android {
     namespace = "com.blreay.bluetoothmonitor"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.blreay.bluetoothmonitor"
+        applicationId = "com.blreay.bluetoothmonitor.nogui"
         minSdk = 31
         // PINNED TO 32 ON PURPOSE.
         // Android 13 made BluetoothAdapter.enable()/disable() return false for
-        // anything targeting API 33+. The legacy broadcast recovery still uses
-        // them; manual toggles instead run through the Shizuku UserService.
+        // anything targeting API 33+. The forthcoming shared ordinary Bluetooth fallback
+        // still needs these calls when privileged Shizuku control is unavailable.
         targetSdk = 32
         versionCode = autoVersionCode
         versionName = "1.0"
@@ -28,10 +52,10 @@ android {
 
     signingConfigs {
         create("release") {
-            storeFile = rootProject.file(signingProp("BT_RESET_STORE_FILE"))
-            storePassword = signingProp("BT_RESET_STORE_PASSWORD")
-            keyAlias = signingProp("BT_RESET_KEY_ALIAS")
-            keyPassword = signingProp("BT_RESET_KEY_PASSWORD")
+            storeFile = noguiStoreFile
+            storePassword = noguiSigningProp("BT_NOGUI_STORE_PASSWORD").takeIf { it.isNotBlank() }
+            keyAlias = noguiSigningProp("BT_NOGUI_KEY_ALIAS").takeIf { it.isNotBlank() }
+            keyPassword = noguiSigningProp("BT_NOGUI_KEY_PASSWORD").takeIf { it.isNotBlank() }
         }
     }
 
@@ -63,6 +87,65 @@ android {
         // every single build and could fail the release assembly.
         checkReleaseBuilds = false
         abortOnError = false
+    }
+}
+
+// AGP can emit unsigned artifacts when signing fields are incomplete. Guard the
+// actual APK/bundle packaging tasks, not just the aggregate assemble task.
+val validateNoguiReleaseSigning = tasks.register("validateNoguiReleaseSigning") {
+    group = "verification"
+    description = "Validate the private No-GUI release signer without exposing credentials."
+    doLast {
+        fun invalid(message: String): Nothing =
+            throw GradleException("No-GUI release signing validation failed: $message")
+
+        if (!signingPropertiesFile.isFile || noguiSigningProperties == null) {
+            invalid("private signing properties are unavailable.")
+        }
+        val requiredFields = listOf("BT_NOGUI_STORE_FILE", "BT_NOGUI_STORE_PASSWORD",
+            "BT_NOGUI_KEY_ALIAS", "BT_NOGUI_KEY_PASSWORD")
+        if (requiredFields.any { noguiSigningProp(it).isBlank() }) {
+            invalid("required private signing fields are missing.")
+        }
+        val storeFile = noguiStoreFile
+        if (storeFile == null || !storeFile.isFile) {
+            invalid("private keystore is unavailable.")
+        }
+
+        val alias = noguiSigningProp("BT_NOGUI_KEY_ALIAS")
+        val storePasswordChars = noguiSigningProp("BT_NOGUI_STORE_PASSWORD").toCharArray()
+        val keyPasswordChars = noguiSigningProp("BT_NOGUI_KEY_PASSWORD").toCharArray()
+        val certificateSha256 = try {
+            val keyStore = KeyStore.getInstance("JKS")
+            storeFile.inputStream().use { keyStore.load(it, storePasswordChars) }
+            if (!keyStore.containsAlias(alias) || !keyStore.isKeyEntry(alias)
+                || keyStore.getKey(alias, keyPasswordChars) !is PrivateKey) {
+                invalid("private key entry is unusable.")
+            }
+            val certificate = keyStore.getCertificate(alias)
+            if (certificate !is X509Certificate) {
+                invalid("private key certificate is unusable.")
+            }
+            MessageDigest.getInstance("SHA-256").digest(certificate.encoded)
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        } catch (_: Exception) {
+            // Do not propagate provider/file exception causes: some echo inputs.
+            invalid("private key or certificate is unusable.")
+        } finally {
+            storePasswordChars.fill('\u0000')
+            keyPasswordChars.fill('\u0000')
+        }
+        val retiredCertificateSha256 = "2ebfee29e52a9867240060922a62e1c32bdf3ee587911a657082118235292dad"
+        if (certificateSha256 == retiredCertificateSha256) {
+            invalid("retired signing certificate is forbidden.")
+        }
+    }
+}
+
+tasks.configureEach {
+    if (name in setOf("packageRelease", "packageReleaseBundle", "signReleaseBundle",
+        "assembleRelease", "bundleRelease", "validateSigningRelease")) {
+        dependsOn(validateNoguiReleaseSigning)
     }
 }
 

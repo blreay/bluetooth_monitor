@@ -7,210 +7,161 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import rikka.shizuku.Shizuku
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.Executors
-import java.util.concurrent.Future
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
 
-/** Owns listeners, a non-daemon UserService, and bounded asynchronous Binder calls. */
-class ShizukuBluetoothClient(
-    private val context: Context,
-    private val onStatus: (String) -> Unit,
-) {
+/** Application-owned official SDK listeners and exact broker slot. Never owned by an Activity. */
+class ShizukuBluetoothClient(private val context: Context, private val onStatus: (String) -> Unit) {
     private val handler = Handler(Looper.getMainLooper())
-    private val io = Executors.newCachedThreadPool { task ->
-        Thread(task, "bt-shizuku").apply { isDaemon = true }
-    }
-    private val auth = ShizukuAuthorization()
-    @Volatile private var started = false
-    @Volatile private var epoch = 0
-    private var statusSerial = 0
-    private var operationSerial = 0
-    private var detail = "Shizuku 未启动"
-    private var permissionCode: Int? = null
-    private var lastPermissionCode: Int? = null
-    private var awaitingBinder = false
+    @Volatile private var attached = false
+    private var started = false
+    private var authorizationBusy = false
     @Volatile private var binding: Binding? = null
-    private var statusTimeout: Runnable? = null
-    private var statusRead: Future<*>? = null
-    private var requestTimeout: Runnable? = null
-    private var rpcTimeout: Runnable? = null
-    private var rpc: Future<*>? = null
-    private var operationCallback: ((BluetoothCommandResult) -> Unit)? = null
-    var busy = false
+    private var permissionCode: Int? = null
+    private var nextPermissionCode = 5000
+    private var humanWait: ((SwitchCapability) -> Unit)? = null
+    private var humanTimer: Runnable? = null
+    private var bindWait: ((SwitchCapability) -> Unit)? = null
+    private var bindTimer: Runnable? = null
+    private var lastMode: SwitchMode? = null
+    var status: String = "Shizuku 授权状态未知；尚未连接"
         private set
-    val canToggle: Boolean get() = started && auth.canToggle && binding?.remote?.asBinder()?.isBinderAlive == true
+    private val prefs get() = context.getSharedPreferences("bt_reset_setup", Context.MODE_PRIVATE)
+    private fun automaticRequest(code: Int) = AutomaticAuthorization(
+        { prefs.getBoolean("shizuku_actual_attempt", false) },
+        { prefs.edit().putBoolean("shizuku_actual_attempt", true).commit() },
+        { Shizuku.requestPermission(code) },
+    )
 
-    private var received: Shizuku.OnBinderReceivedListener? = null
-    private var dead: Shizuku.OnBinderDeadListener? = null
-    private var permissionResult: Shizuku.OnRequestPermissionResultListener? = null
-
-    private fun createReceived(life: Int) = Shizuku.OnBinderReceivedListener {
+    private val received = Shizuku.OnBinderReceivedListener {
         if (!started) return@OnBinderReceivedListener
-        if (life != epoch) return@OnBinderReceivedListener
-        if (awaitingBinder && busy) {
-            detail = "已收到 Shizuku 连接，正在检查授权"
-            publish()
-        } else {
-            lastPermissionCode = null
-            disconnect("Shizuku 已重新连接，请点击申请权限连接服务")
-            refresh()
-        }
+        attached = true // SDK attachment callback, not merely pingBinder().
+        publish("Shizuku 已连接；授权需通过 SDK 检查（SDK 可能缓存结果）")
     }
-    private fun createDead(life: Int) = Shizuku.OnBinderDeadListener {
+    private val dead = Shizuku.OnBinderDeadListener {
         if (!started) return@OnBinderDeadListener
-        if (life != epoch) return@OnBinderDeadListener
-        lastPermissionCode = null
-        auth.binderDied()
-        disconnect("Shizuku 连接已断开，请重新启动 Shizuku")
+        attached = false
+        lastMode = null
+        retireBinding()
+        publish("Shizuku 连接已断开；将自动尝试普通方式")
+        finishBind(SwitchCapability(null, status))
+        finishHuman(SwitchCapability(null, status))
     }
-    private fun createPermissionResult(life: Int) = Shizuku.OnRequestPermissionResultListener { code, result ->
-        if (!started || life != epoch || code != lastPermissionCode) return@OnRequestPermissionResultListener
-        val activeRequest = code == permissionCode
+    private val permission = Shizuku.OnRequestPermissionResultListener { code, result ->
+        if (!started || code != permissionCode) return@OnRequestPermissionResultListener
         permissionCode = null
-        clearRequestTimer()
-        auth.permissionResult(result == PackageManager.PERMISSION_GRANTED)
-        if (!activeRequest) {
-            detail = "权限选择已返回；先前等待已取消，请点击申请权限连接服务"
-            publish()
-        } else if (auth.granted) connect()
-        else {
-            busy = false
-            detail = "授权被拒绝；若已选择不再询问，请在 Shizuku 中允许本应用"
-            publish()
+        val granted = result == PackageManager.PERMISSION_GRANTED
+        publish(if (granted) "Shizuku 授权成功；不代表蓝牙切换成功" else "Shizuku 授权被拒绝；自动尝试普通方式，可在详情中显式重试")
+        val continuation = humanWait
+        if (continuation == null) {
+            // A late grant updates readiness only. It cannot restart scan/reset or alter a dispatched backend.
+            return@OnRequestPermissionResultListener
         }
+        clearHumanTimer()
+        humanWait = null
+        if (granted) preflight(CommandLease.foreground(), 5_000L, continuation)
+        else continuation(SwitchCapability(null, status))
     }
 
     fun start() {
         if (started) return
         started = true
-        epoch++
-        received = createReceived(epoch)
-        dead = createDead(epoch)
-        permissionResult = createPermissionResult(epoch)
-        Shizuku.addBinderReceivedListener(received!!)
-        Shizuku.addBinderDeadListener(dead!!)
-        Shizuku.addRequestPermissionResultListener(permissionResult!!)
-        refresh()
+        Shizuku.addBinderReceivedListenerSticky(received)
+        Shizuku.addBinderDeadListener(dead)
+        Shizuku.addRequestPermissionResultListener(permission)
     }
 
-    /** Reading a grant is not requesting one, and never binds a service on startup. */
-    private fun refresh() {
-        cancelStatusRead()
-        val life = epoch
-        val serial = ++statusSerial
-        val token = auth.beginStatusRead()
-        detail = unavailableIfQuarantined("正在读取 Shizuku 授权状态")
-        publish()
-        statusTimeout = Runnable {
-            if (!started || life != epoch || serial != statusSerial || !auth.timeoutStatusRead(token)) return@Runnable
-            cancelStatusRead()
-            detail = unavailableIfQuarantined("Shizuku 状态读取超时；授权与服务状态未确认，请检查 Shizuku 后重试")
-            publish()
-        }.also { handler.postDelayed(it, BIND_TIMEOUT_MS) }
-        try {
-            statusRead = statusIo.submit {
-                val result = try {
-                    val available = Shizuku.pingBinder()
-                    available to (available && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED)
-                } catch (_: Exception) { null }
-                handler.post {
-                    if (!started || life != epoch || serial != statusSerial) return@post
-                    if (!auth.finishStatusRead(token, result?.first ?: false, result?.second ?: false)) return@post
-                    cancelStatusRead()
-                    detail = when {
-                        ShizukuUserServiceBroker.quarantined -> ShizukuUserServiceBroker.UNAVAILABLE
-                        result == null -> "无法读取 Shizuku 状态；授权状态未知，请重试"
-                        result.first -> "服务未连接，请点击申请权限"
-                        else -> "Shizuku 未启动，请先启动 Shizuku"
-                    }
-                    publish()
-                }
-            }
-        } catch (_: RejectedExecutionException) {
-            auth.timeoutStatusRead(token)
-            cancelStatusRead()
-            detail = unavailableIfQuarantined("Shizuku 状态读取仍未完成；授权状态未知，请检查 Shizuku 后重试")
-            publish()
+    /** Startup only: actual first permission request precedes the Nearby gate. Recovery never calls this. */
+    fun startup(explicit: Boolean = false, callback: (SwitchCapability) -> Unit) {
+        start()
+        if (authorizationBusy) { callback(SwitchCapability(null, "权限检查/选择已在等待；不会重复申请")); return }
+        authorizationBusy = true
+        val completion = CompletionGate()
+        val guardedCallback: (SwitchCapability) -> Unit = { capability ->
+            if (completion.finish()) { authorizationBusy = false; callback(capability) }
         }
-    }
-
-    private fun cancelStatusRead() {
-        auth.cancelStatusRead()
-        statusTimeout?.let { handler.removeCallbacks(it) }
-        statusTimeout = null
-        statusRead?.cancel(true)
-        (statusRead as? Runnable)?.let { statusIo.remove(it) }
-        statusRead = null
-    }
-
-    /** Called only by the authorization button. No request/retry is performed by lifecycle callbacks. */
-    fun requestAuthorization() {
-        if (!started || busy) return
-        cancelStatusRead()
-        if (ShizukuUserServiceBroker.quarantined) {
-            detail = ShizukuUserServiceBroker.UNAVAILABLE
-            publish()
-            return
-        }
-        busy = true
-        lastPermissionCode = null
-        awaitingBinder = true
-        statusSerial++
-        detail = "正在检查 Shizuku 授权"
-        publish()
-        val life = epoch
-        val serial = statusSerial
-        armRequestTimer("申请授权超时，请重试")
-        io.execute {
-            try {
-                // The official provider receives the main-process binder automatically.
-                val deadline = SystemClock.elapsedRealtime() + BIND_TIMEOUT_MS
-                var available = Shizuku.pingBinder()
-                while (!available && SystemClock.elapsedRealtime() < deadline) {
-                    Thread.sleep(100)
-                    available = Shizuku.pingBinder()
-                }
-                val grant = available && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-                val permanentlyDenied = available && !grant && Shizuku.shouldShowRequestPermissionRationale()
-                handler.post {
-                    if (!started || life != epoch || serial != statusSerial || !busy) return@post
-                    awaitingBinder = false
-                    if (!available) {
-                        auth.binderDied()
-                        authorizationFailed("Shizuku 未启动，请先启动 Shizuku")
-                    } else {
-                        auth.binderReceived(grant)
-                        when {
-                            grant -> { clearRequestTimer(); connect() }
-                            permanentlyDenied -> authorizationFailed("授权被拒绝且不再询问，请在 Shizuku 中允许本应用")
-                            else -> requestPermission(life)
-                        }
+        probe(CommandLease.foreground(), 5_000L) { probe ->
+            if (probe.mode == null) { guardedCallback(SwitchCapability(null, probe.reason)); return@probe }
+            if (probe.granted) { connect(probe.mode, 5_000L, guardedCallback); return@probe }
+            val code = nextPermissionCode++
+            permissionCode = code
+            humanWait = guardedCallback
+            publish("自动检查首次 Shizuku 权限申请；授权不等于切换成功")
+            humanTimer = Runnable { finishHuman(SwitchCapability(null, "等待 Shizuku 权限选择超时；自动尝试普通方式；迟到授权仅影响今后运行")) }
+                .also { handler.postDelayed(it, 60_000L) }
+            val requestLease = CommandLease({ SystemClock.elapsedRealtime() }, SystemClock.elapsedRealtime() + 5_000L)
+            val automatic = automaticRequest(code)
+            BoundedBluetoothWork.submit(BoundedBluetoothWork.Lane.STATUS, requestLease, 5_000L,
+                { RequestResult(null, "权限请求未进入执行；队列/执行窗口已占用，不消耗首次标记") },
+                { RequestResult(null, "Shizuku 权限请求超时/异常；自动尝试普通方式，迟到授权仅影响今后运行") },
+                {
+                    val connected = attached && Shizuku.pingBinder()
+                    val granted = connected && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+                    if (!requestLease.valid()) RequestResult(null, "权限请求执行窗口已过期；未开始新申请")
+                    else RequestResult(automatic.authorize(connected, granted, explicit), "")
+                }) { request, late ->
+                if (late || humanWait == null || permissionCode != code) return@submit
+                when (request.decision) {
+                    AutomaticAuthorization.Decision.REQUESTED -> publish("等待 Shizuku 权限选择（最多 60 秒）；授权不等于硬件切换成功")
+                    AutomaticAuthorization.Decision.READY -> {
+                        clearHumanTimer()
+                        val ready = humanWait; humanWait = null
+                        ready?.let { preflight(CommandLease.foreground(), 5_000L, it) }
                     }
-                }
-            } catch (e: Exception) {
-                handler.post {
-                    if (started && life == epoch && serial == statusSerial) authorizationFailed("无法申请授权：${e.message}")
+                    AutomaticAuthorization.Decision.STORE_FAILED -> finishHuman(SwitchCapability(null, "无法保存首次实际申请标记；未申请，改用普通方式"))
+                    AutomaticAuthorization.Decision.NO_BINDER -> finishHuman(SwitchCapability(null, "Shizuku 尚未连接，可能未启动/配对；未消耗首次标记，不能可靠诊断配对原因"))
+                    AutomaticAuthorization.Decision.PREVIOUS_ATTEMPT -> finishHuman(SwitchCapability(null, "Shizuku 未授权；此前已实际申请，不自动重复弹窗；详情可显式重试"))
+                    null -> finishHuman(SwitchCapability(null, request.reason))
                 }
             }
         }
     }
 
-    private fun requestPermission(life: Int) {
-        armRequestTimer("等待 Shizuku 权限选择超时，请再次点击申请权限")
-        val code = nextPermissionCode++
-        permissionCode = code
-        lastPermissionCode = code
-        detail = "等待 Shizuku 权限选择"
-        publish()
-        io.execute {
-            if (!started || life != epoch) return@execute
-            try { Shizuku.requestPermission(code) } catch (e: Exception) {
-                handler.post {
-                    if (started && life == epoch && permissionCode == code) authorizationFailed("申请失败：${e.message}")
+    private data class RequestResult(val decision: AutomaticAuthorization.Decision?, val reason: String)
+    private data class Probe(val mode: SwitchMode?, val granted: Boolean, val reason: String)
+    private fun probe(lease: CommandLease, budget: Long, callback: (Probe) -> Unit) {
+        val gate = CompletionGate()
+        BoundedBluetoothWork.submit(BoundedBluetoothWork.Lane.STATUS, lease, budget,
+            { Probe(null, false, "Shizuku 状态任务未开始/已过期/队列占用") },
+            { Probe(null, false, "Shizuku 状态检查超时；授权未知，自动尝试普通方式") },
+            {
+                val end = SystemClock.elapsedRealtime() + (budget - 200L).coerceAtLeast(1L)
+                while (!attached && lease.valid() && SystemClock.elapsedRealtime() < end) Thread.sleep(100)
+                if (!attached || !Shizuku.pingBinder()) Probe(null, false, managerUnavailable())
+                else if (Shizuku.isPreV11() || Shizuku.getVersion() < 13) Probe(null, false, "Shizuku 服务版本过旧；本应用保守要求 v13+ 的非 daemon UserService/移除与权限回调能力，自动改用普通方式")
+                else {
+                    val uid = Shizuku.getUid()
+                    val mode = when (uid) { 0 -> SwitchMode.SHIZUKU_ROOT; 2000 -> SwitchMode.SHIZUKU_SHELL; else -> null }
+                    if (mode == null) Probe(null, false, "Shizuku 服务实际 UID=$uid，不是 root/shell")
+                    else Probe(mode, Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED,
+                        "已检查 SDK 授权（可能使用 SDK 缓存）；实际服务 UID=$uid")
                 }
+            },
+        ) { value, _ ->
+            if (gate.finish()) {
+                lastMode = value.mode
+                publish(if (value.granted) "Shizuku 授权成功；${value.reason}" else "Shizuku 未授权/不可用；${value.reason}")
+                callback(value)
+            }
+        }
+    }
+
+    private fun managerUnavailable(): String {
+        // Capability is checked FIRST, so Sui/root Binder works without the manager package.
+        val installed = try { context.packageManager.getApplicationInfo("moe.shizuku.privileged.api", 0); true }
+            catch (_: PackageManager.NameNotFoundException) { false }
+        return if (installed) "Shizuku 尚未连接，可能未启动/配对；不能可靠诊断配对原因"
+            else "Shizuku 尚未连接；未找到 Shizuku 管理器（Sui/root 连接亦可使用）"
+    }
+
+    fun preflight(lease: CommandLease, budgetMs: Long, callback: (SwitchCapability) -> Unit) {
+        val start = SystemClock.elapsedRealtime()
+        probe(lease, budgetMs) { value ->
+            if (!lease.valid()) { callback(SwitchCapability(null, "执行窗口已过期")); return@probe }
+            if (value.mode == null || !value.granted) {
+                callback(SwitchCapability(null, if (value.mode != null) "Shizuku SDK 授权被拒绝/未授予" else value.reason))
+            } else {
+                val remaining = budgetMs - (SystemClock.elapsedRealtime() - start)
+                if (remaining <= 0) callback(SwitchCapability(null, "Shizuku 检查/连接总窗口已过期"))
+                else connect(value.mode, remaining, callback)
             }
         }
     }
@@ -218,216 +169,111 @@ class ShizukuBluetoothClient(
     private inner class Binding {
         var registration: ShizukuUserServiceBroker.Registration? = null
         var remote: IPrivilegedBluetoothService? = null
-        val death = IBinder.DeathRecipient {
-            handler.post { if (started && binding === this) disconnect("高权限服务已断开，请点击申请权限重新连接") }
-        }
+        val death = IBinder.DeathRecipient { handler.post { if (binding === this) {
+            retireBinding(); publish("高权限服务已断开；自动尝试普通方式")
+            finishBind(SwitchCapability(null, status))
+        } } }
         val owner = object : ShizukuRegistrationBroker.Owner<IBinder> {
             override fun connected(endpoint: IBinder) {
                 handler.post {
-                    if (!started || binding !== this@Binding) {
-                        dispose(this@Binding)
+                    if (binding !== this@Binding) {
+                        registration?.let { ShizukuUserServiceBroker.retire(it) }
                         return@post
                     }
                     try {
                         endpoint.linkToDeath(death, 0)
                         remote = IPrivilegedBluetoothService.Stub.asInterface(endpoint)
-                        auth.serviceConnected()
-                        clearRequestTimer()
-                        busy = false
-                        detail = "高权限服务已就绪"
-                        publish()
-                    } catch (e: Exception) { disconnect("高权限服务连接失败：${e.message}") }
+                        finishBind(SwitchCapability(lastMode, "高权限服务就绪；每次命令仍需新检查"))
+                    } catch (_: Exception) {
+                        retireBinding(); finishBind(SwitchCapability(null, "高权限端点连接失败"))
+                    }
                 }
             }
             override fun disconnected() {
-                handler.post { if (started && binding === this@Binding) disconnect("高权限服务已断开，请重连") }
+                handler.post { if (binding === this@Binding) {
+                    retireBinding(); finishBind(SwitchCapability(null, "高权限服务已断开"))
+                } }
             }
             override fun failed(message: String) {
-                handler.post { if (started && binding === this@Binding) disconnect("$message；${ShizukuUserServiceBroker.UNAVAILABLE}") }
+                handler.post { if (binding === this@Binding) {
+                    retireBinding(); finishBind(SwitchCapability(null, message))
+                } }
             }
         }
     }
 
-    private fun connect() {
+    private fun connect(mode: SwitchMode, budget: Long, callback: (SwitchCapability) -> Unit) {
+        lastMode = mode
         val current = binding
         val endpoint = current?.remote?.asBinder()
         val registration = current?.registration
-        // A fresh genuine grant may reconfirm this exact live slot without rebinding or retiring it.
-        if (auth.granted && endpoint?.isBinderAlive == true && registration != null &&
+        if (endpoint?.isBinderAlive == true && registration != null &&
             ShizukuUserServiceBroker.canReconfirm(registration, endpoint)) {
-            auth.serviceConnected()
-            clearRequestTimer()
-            busy = false
-            detail = "已确认 Shizuku 授权；当前高权限服务仍就绪"
-            publish()
+            callback(SwitchCapability(mode, "重新确认同一健康 Shizuku 服务槽；SDK 授权已检查"))
             return
         }
-        val old = binding
-        binding = null
-        old?.let { dispose(it) }
-        auth.serviceDisconnected()
+        if (bindWait != null) { callback(SwitchCapability(null, "高权限服务连接正在进行；普通方式可继续")); return }
+        if (ShizukuUserServiceBroker.quarantined) { callback(SwitchCapability(null, ShizukuUserServiceBroker.UNAVAILABLE)); return }
+        retireBinding()
+        bindWait = callback
         val next = Binding()
         binding = next
-        detail = "正在连接高权限服务"
-        publish()
-        armRequestTimer("高权限服务连接超时；${ShizukuUserServiceBroker.UNAVAILABLE}")
+        bindTimer = Runnable {
+            retireBinding()
+            finishBind(SwitchCapability(null, "高权限服务连接超时；${ShizukuUserServiceBroker.UNAVAILABLE}"))
+        }.also { handler.postDelayed(it, budget) }
         next.registration = ShizukuUserServiceBroker.bind(context, next.owner)
-        if (next.registration == null) disconnect(ShizukuUserServiceBroker.UNAVAILABLE)
+        if (next.registration == null) { retireBinding(); finishBind(SwitchCapability(null, ShizukuUserServiceBroker.UNAVAILABLE)) }
     }
 
-    /** Fresh preflight, before Activity claims ownership and cancels the legacy alarm. */
-    fun checkReady(callback: (Boolean) -> Unit) {
-        val life = epoch
+    fun executeToggle(enabled: Boolean, lease: CommandLease, budgetMs: Long, callback: (SwitchOutcome) -> Unit) {
         val current = binding
-        val serial = ++operationSerial
-        rpcTimeout = Runnable {
-            if (started && life == epoch && serial == operationSerial) {
-                operationSerial++
-                disconnect("授权检查超时，请重新连接")
-                callback(false)
-            }
-        }.also { handler.postDelayed(it, BIND_TIMEOUT_MS) }
-        io.execute {
-            val granted = try {
-                Shizuku.pingBinder() && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-            } catch (_: Exception) { false }
-            handler.post {
-                if (!started || life != epoch || serial != operationSerial) return@post
-                clearRpcTimer()
-                auth.permissionResult(granted)
-                publish()
-                callback(current != null && binding === current && canToggle)
-            }
+        val remote = current?.remote
+        val mode = lastMode
+        if (remote == null || mode == null) { callback(SwitchOutcome.notInvoked("Shizuku 服务在派发前不可用")); return }
+        BoundedBluetoothWork.submit(BoundedBluetoothWork.Lane.RPC, lease, budgetMs,
+            { SwitchOutcome.notInvoked("高权限命令未进入执行；窗口过期/队列占用") },
+            { SwitchOutcome.uncertain(mode, "高权限 RPC 超时/异常；可能已提交，旧执行权限未确认结束，不重放命令") },
+            {
+                if (!lease.valid() || binding !== current || !remote.asBinder().isBinderAlive) SwitchOutcome.notInvoked("派发前服务/执行窗口已失效")
+                else {
+                    val result = BluetoothCommandResult.decode(remote.setBluetoothEnabled(enabled))
+                    val status = when (result.status) {
+                        BluetoothCommandResult.Status.SUBMITTED -> SwitchOutcome.Status.SUBMITTED
+                        BluetoothCommandResult.Status.NOT_INVOKED -> SwitchOutcome.Status.NOT_INVOKED
+                        BluetoothCommandResult.Status.ERROR -> SwitchOutcome.Status.UNCERTAIN
+                        else -> SwitchOutcome.Status.UNCERTAIN
+                    }
+                    SwitchOutcome(status, if (status == SwitchOutcome.Status.NOT_INVOKED) SwitchMode.NONE else mode,
+                        result.output.ifBlank { "svc 返回 ${result.status}；不代表硬件状态" }, result.authorityEnded)
+                }
+            },
+        ) { result, late ->
+            // Do not cancel native Future or dispose its endpoint on timeout: neither proves quiescence.
+            if (late) publish("迟到高权限返回：${result.status}；仅核对同一持久化命令，不重启扫描")
+            callback(result)
         }
     }
 
-    fun executeToggle(enabled: Boolean, callback: (BluetoothCommandResult) -> Unit) {
-        if (!canToggle || operationCallback != null) {
-            callback(BluetoothCommandResult(BluetoothCommandResult.Status.ERROR, "Shizuku 未授权或服务未就绪"))
-            return
-        }
-        val remote = binding!!.remote!!
-        val serial = ++operationSerial
-        operationCallback = callback
-        rpcTimeout = Runnable {
-            if (serial == operationSerial) {
-                completeOperation(BluetoothCommandResult(BluetoothCommandResult.Status.TIMEOUT, "高权限调用超时；请求可能已提交，状态未确认"))
-                disconnect("高权限调用超时，请重新连接")
-            }
-        }.also { handler.postDelayed(it, RPC_TIMEOUT_MS) }
-        rpc = io.submit {
-            val result = try {
-                BluetoothCommandResult.decode(remote.setBluetoothEnabled(enabled))
-            } catch (e: Exception) {
-                BluetoothCommandResult(BluetoothCommandResult.Status.ERROR, "高权限调用失败，状态未确认：${e.message}")
-            }
-            handler.post {
-                if (!started || serial != operationSerial) return@post
-                if (result.status != BluetoothCommandResult.Status.SUBMITTED) {
-                    disconnect("高权限调用未成功，请重新连接", result)
-                } else completeOperation(result)
-            }
-        }
-    }
-
-    private fun completeOperation(result: BluetoothCommandResult) {
-        operationSerial++
-        clearRpcTimer()
-        rpc?.cancel(true)
-        rpc = null
-        val callback = operationCallback
-        operationCallback = null
-        callback?.invoke(result)
-    }
-
-    private fun disconnect(message: String, result: BluetoothCommandResult? = null) {
-        cancelStatusRead()
-        awaitingBinder = false
-        statusSerial++
-        permissionCode = null
-        clearRequestTimer()
-        auth.serviceDisconnected()
+    private fun retireBinding() {
         val old = binding
         binding = null
-        old?.let { dispose(it) }
-        busy = false
-        detail = unavailableIfQuarantined(message)
-        if (operationCallback != null) completeOperation(result ?: BluetoothCommandResult(BluetoothCommandResult.Status.ERROR, "$message；蓝牙状态未确认"))
-        publish()
+        try { old?.remote?.asBinder()?.unlinkToDeath(old.death, 0) } catch (_: Exception) {}
+        old?.registration?.let { ShizukuUserServiceBroker.retire(it) }
+        old?.remote = null
     }
-
-    private fun dispose(old: Binding) {
-        try { old.remote?.asBinder()?.unlinkToDeath(old.death, 0) } catch (_: Exception) {}
-        old.remote = null
-        old.registration?.let { ShizukuUserServiceBroker.retire(it) }
+    private fun finishBind(capability: SwitchCapability) {
+        bindTimer?.let { handler.removeCallbacks(it) }; bindTimer = null
+        val callback = bindWait; bindWait = null
+        callback?.invoke(capability)
     }
-
-    private fun authorizationFailed(message: String) {
-        awaitingBinder = false
-        permissionCode = null
-        statusSerial++
-        clearRequestTimer()
-        busy = false
-        detail = message
-        publish()
+    private fun clearHumanTimer() { humanTimer?.let { handler.removeCallbacks(it) }; humanTimer = null }
+    private fun finishHuman(capability: SwitchCapability) {
+        clearHumanTimer()
+        val callback = humanWait; humanWait = null
+        publish(capability.reason)
+        callback?.invoke(capability)
+        // Keep permissionCode: a late SDK result may update future readiness, but not callback again.
     }
-
-    private fun armRequestTimer(message: String) {
-        clearRequestTimer()
-        requestTimeout = Runnable {
-            if (started) disconnect(if (awaitingBinder) "未收到 Shizuku 连接，请先启动 Shizuku 后重试" else message)
-        }
-            .also { handler.postDelayed(it, BIND_TIMEOUT_MS) }
-    }
-    private fun clearRequestTimer() { requestTimeout?.let { handler.removeCallbacks(it) }; requestTimeout = null }
-    private fun clearRpcTimer() { rpcTimeout?.let { handler.removeCallbacks(it) }; rpcTimeout = null }
-    private fun unavailableIfQuarantined(message: String): String =
-        if (ShizukuUserServiceBroker.quarantined) ShizukuUserServiceBroker.UNAVAILABLE else message
-    private fun publish() {
-        val status = when {
-            auth.granted -> "shizuku授权成功"
-            auth.statusKnown -> "shizuku未授权"
-            else -> "shizuku授权状态未知"
-        }
-        if (started) onStatus(status + "；" + detail)
-    }
-
-    fun stop() {
-        cancelStatusRead()
-        if (!started) return
-        started = false
-        awaitingBinder = false
-        epoch++
-        statusSerial++
-        operationSerial++
-        permissionCode = null
-        lastPermissionCode = null
-        clearRequestTimer()
-        clearRpcTimer()
-        rpc?.cancel(true)
-        rpc = null
-        operationCallback = null
-        received?.let { Shizuku.removeBinderReceivedListener(it) }
-        dead?.let { Shizuku.removeBinderDeadListener(it) }
-        permissionResult?.let { Shizuku.removeRequestPermissionResultListener(it) }
-        received = null
-        dead = null
-        permissionResult = null
-        auth.binderDied()
-        busy = false
-        val old = binding
-        binding = null
-        old?.let { dispose(it) }
-    }
-
-    fun close() { stop(); io.shutdownNow() }
-
-    companion object {
-        // Binder ignores thread interruption: cap status reads across Activity instances, not just their callbacks.
-        private val statusIo = ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue(1),
-            { task -> Thread(task, "bt-shizuku-status").apply { isDaemon = true } })
-        private var nextPermissionCode = 5000
-        private const val BIND_TIMEOUT_MS = 5_000L
-        private const val RPC_TIMEOUT_MS = 8_000L
-    }
+    private fun publish(message: String) { status = message.take(1024); onStatus(status) }
 }

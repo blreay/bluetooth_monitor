@@ -2,91 +2,70 @@ package com.blreay.bluetoothmonitor
 
 import android.content.Context
 import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
 
-/**
- * The slow phase's durable state, and the reason the alarm chain survives
- * MIUI reclaiming the process.
- *
- * Every tick of [ReEnableReceiver] may be the first thing this process has
- * ever done - the system starts it to deliver the alarm and nothing is in
- * memory. So the phase, the tick count and the debug flag all live here
- * rather than in a field.
- *
- * A single record on purpose: the app does one thing, and two concurrent
- * resets would fight over the same radio. Arming while already armed just
- * restarts the count, which is harmless because enable() is only ever called
- * at STATE_OFF.
- */
+/** One checked durable record; no Binder or in-memory-lifetime assumptions are persisted. */
 object PendingResetStore {
-
-    private const val TAG = "BtReset.Store"
     private const val PREFS = "bt_reset_pending"
-    private const val KEY_ARMED = "armed"
-    private const val KEY_PHASE = "phase"
-    private const val KEY_ATTEMPTS = "attempts"
-    private const val KEY_WANTS_TOAST = "wants_toast"
-
-    /**
-     * @param wantsToast the `--ez toast true` debug flag, carried here because
-     *        the tick that finally reports the outcome runs in a different
-     *        process invocation than the one that started the reset, and so
-     *        has no access to the original Intent.
-     */
-    data class Pending(
-        val phase: ReEnablePolicy.Phase,
-        val attempts: Int,
-        val wantsToast: Boolean,
-    )
-
-    /** Arms a fresh chain: WAITING_OFF, zero ticks so far. */
-    fun arm(context: Context, wantsToast: Boolean) {
-        write(context, ReEnablePolicy.Phase.WAITING_OFF, 0, wantsToast)
-        Log.i(TAG, "armed: phase=WAITING_OFF attempts=0 wantsToast=$wantsToast")
+    fun persistence(context: Context): ResetPersistence = object : ResetPersistence {
+        override fun read() = PendingResetStore.read(context)
+        override fun commit(expected: ResetRecord?, next: ResetRecord?) = PendingResetStore.commit(context, expected, next)
     }
 
-    /**
-     * @return null when nothing is armed, or when the stored phase cannot be
-     *         parsed. A corrupt record must read as "nothing to do", never as
-     *         a crash inside a BroadcastReceiver the system just started.
-     */
-    fun read(context: Context): Pending? {
+    fun read(context: Context): ResetRecord? {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (!prefs.getBoolean(KEY_ARMED, false)) return null
-        val rawPhase = prefs.getString(KEY_PHASE, null) ?: return null
-        val phase = try {
-            ReEnablePolicy.Phase.valueOf(rawPhase)
-        } catch (e: IllegalArgumentException) {
-            Log.e(TAG, "unreadable phase '$rawPhase'; treating as not armed", e)
-            return null
+        val raw = prefs.getString("record", null)
+        if (raw == null && !prefs.getBoolean("armed", false)) return null
+        return try {
+            val json = JSONObject(requireNotNull(raw))
+            val history = json.optJSONArray("history") ?: JSONArray()
+            ResetRecord(
+                runId = json.getString("run"), commandId = json.getString("command"),
+                version = json.getLong("version"), stage = ResetStage.valueOf(json.getString("stage")),
+                phase = ReEnablePolicy.Phase.valueOf(json.getString("phase")), attempts = json.getInt("attempts"),
+                extraObservations = json.optInt("extra"), wantsToast = json.optBoolean("toast"),
+                offDispatchedAt = json.optLong("offDispatch"), offCompletedAt = json.optLong("offComplete"),
+                dispatchedAt = json.optLong("dispatch"), commandDeadline = json.optLong("deadline"),
+                authorityEnded = json.getBoolean("ended"), lastStatus = SwitchOutcome.Status.valueOf(json.getString("status")),
+                lastMode = SwitchMode.valueOf(json.getString("mode")), ordinaryOnly = json.optBoolean("ordinaryOnly"),
+                ordinaryOnAttempts = json.optInt("ordinaryAttempts"), lastOrdinaryOnAt = json.optLong("ordinaryAt"),
+                modeBits = json.optInt("modeBits"), history = (0 until minOf(history.length(), 12)).map {
+                    val entry = history.getJSONObject(it)
+                    BackendEntry(SwitchMode.valueOf(entry.getString("mode")), entry.getString("reason").take(512))
+                }, reason = json.optString("reason").take(1024),
+            )
+        } catch (e: Exception) {
+            Log.e("BtReset.Store", "Unreadable/legacy pending record; preserve safety quarantine", e)
+            // Corrupt or old dispatched state must NEVER read as empty and authorize another OFF.
+            ResetRecord("unreadable-pending", "unknown-command", stage = ResetStage.QUARANTINED,
+                authorityEnded = false, reason = "旧/损坏的待恢复记录无法判定执行结束；保留安全隔离，请检查系统蓝牙状态")
         }
-        return Pending(
-            phase = phase,
-            attempts = prefs.getInt(KEY_ATTEMPTS, 0),
-            wantsToast = prefs.getBoolean(KEY_WANTS_TOAST, false),
-        )
     }
 
-    fun write(
-        context: Context,
-        phase: ReEnablePolicy.Phase,
-        attempts: Int,
-        wantsToast: Boolean,
-    ) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .putBoolean(KEY_ARMED, true)
-            .putString(KEY_PHASE, phase.name)
-            .putInt(KEY_ATTEMPTS, attempts)
-            .putBoolean(KEY_WANTS_TOAST, wantsToast)
-            .apply()
+    fun commit(context: Context, expected: ResetRecord?, next: ResetRecord?): Boolean {
+        if (read(context) != expected) return false
+        return try {
+            val edit = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear()
+            if (next != null) edit.putString("record", encode(next))
+            edit.commit().also { if (!it) Log.e("BtReset.Store", "durable commit failed; no new command permitted") }
+        } catch (e: Exception) {
+            Log.e("BtReset.Store", "durable commit threw; no new command permitted", e)
+            false
+        }
     }
 
-    /** Every give-up path and the success path must call this, or alarms leak. */
-    fun clear(context: Context) {
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit()
-            .clear()
-            .apply()
-        Log.i(TAG, "cleared")
-    }
+    private fun encode(record: ResetRecord): String = JSONObject().apply {
+        put("run", record.runId); put("command", record.commandId); put("version", record.version)
+        put("stage", record.stage.name); put("phase", record.phase.name); put("attempts", record.attempts)
+        put("extra", record.extraObservations); put("toast", record.wantsToast)
+        put("offDispatch", record.offDispatchedAt); put("offComplete", record.offCompletedAt)
+        put("dispatch", record.dispatchedAt); put("deadline", record.commandDeadline); put("ended", record.authorityEnded)
+        put("status", record.lastStatus.name); put("mode", record.lastMode.name); put("ordinaryOnly", record.ordinaryOnly)
+        put("ordinaryAttempts", record.ordinaryOnAttempts); put("ordinaryAt", record.lastOrdinaryOnAt)
+        put("modeBits", record.modeBits); put("reason", record.reason.take(1024))
+        put("history", JSONArray().apply { record.history.takeLast(12).forEach { entry ->
+            put(JSONObject().put("mode", entry.mode.name).put("reason", entry.reason.take(512)))
+        } })
+    }.toString()
 }

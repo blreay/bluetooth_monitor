@@ -2,6 +2,8 @@ package com.blreay.bluetoothmonitor
 
 import android.content.Context
 import android.util.Log
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 
 /**
@@ -34,8 +36,8 @@ object Notifier {
      * The debug extra, read by every entry point and carried into
      * [PendingResetStore] so the slow phase can honour it too:
      *
-     *     am start -n com.blreay.bluetoothmonitor/.MainActivity --ez toast true
-     *     am broadcast -a com.blreay.bluetoothmonitor.action.RESET_IF_PRESENT --ez toast true
+     *     am start -n com.blreay.bluetoothmonitor.nogui/com.blreay.bluetoothmonitor.MainActivity --ez toast true
+     *     am broadcast -a com.blreay.bluetoothmonitor.nogui.action.RESET_IF_PRESENT --ez toast true
      */
     const val EXTRA_TOAST = "toast"
 
@@ -70,6 +72,11 @@ object Notifier {
         Log.i(TAG, "toast: $text")
         // applicationContext: a Toast outlives the Receiver or Service that
         // asked for it, and must not keep one alive.
-        Toast.makeText(context.applicationContext, text, Toast.LENGTH_SHORT).show()
+        val app = context.applicationContext
+        val display = {
+            try { Toast.makeText(app, text.take(1000), Toast.LENGTH_SHORT).show() }
+            catch (e: Exception) { Log.w(TAG, "best-effort toast unavailable; visibility not guaranteed", e) }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) display() else Handler(Looper.getMainLooper()).post { display() }
     }
 }

@@ -4,7 +4,7 @@ import java.io.File
 import org.junit.Assert.*
 import org.junit.Test
 
-/** Complements the pure behavior tests; Android/Binder execution still needs a real device. */
+/** Headless integration boundaries complement executable policy/ownership tests, not device tests. */
 class ManualSourceBoundaryTest {
     private fun source(name: String): String {
         val file = File("src/main/java/com/blreay/bluetoothmonitor/$name.kt")
@@ -12,28 +12,96 @@ class ManualSourceBoundaryTest {
         return file.readText()
     }
 
-    @Test fun `launcher does not dispatch legacy reset or finish immediately`() {
+    @Test fun `launcher dispatches and finishes without a placeholder page`() {
         val activity = source("MainActivity")
-        assertFalse(activity.contains("ResetService.start"))
-        assertFalse(activity.contains("BandResetController("))
-        assertFalse(activity.contains("finish()"))
-        for (button in listOf("申请shizuku权限", "关闭蓝牙", "打开蓝牙", "扫描蓝牙")) {
-            assertTrue("Missing exact button $button", activity.contains(button))
+        assertTrue(activity.contains("coordinator.launch("))
+        assertTrue(activity.contains("finish()"))
+        assertFalse(activity.contains("setContentView"))
+        assertFalse(activity.contains("ShizukuBluetoothClient("))
+    }
+
+    @Test fun `Android scanner waits exact foreground admission and failed admission cancels exact controller`() {
+        val coordinator = source("ResetCoordinator")
+        assertTrue(coordinator.contains("ForegroundAdmission("))
+        assertTrue(coordinator.contains("StartupLaunchSequence.dispatch"))
+        assertTrue(coordinator.contains("startup = { ready -> client.startup(callback = ready) }"))
+        assertTrue(coordinator.contains("admission.scanWindow(id,"))
+        assertTrue(coordinator.contains("admission.expire(ticket)"))
+        assertTrue(coordinator.contains("cancelScanFor("))
+        val service = source("ResetService")
+        assertTrue(service.contains("EXTRA_ADMISSION"))
+        assertTrue(service.contains("serviceAdmissionCurrent(ticket)"))
+        assertTrue(service.contains("serviceStarted(ticket)"))
+        assertTrue(service.contains("serviceGone(it)"))
+    }
+
+    @Test fun `Android scan retirement is exact independent coalesced and fences replacement`() {
+        val coordinator = source("ResetCoordinator")
+        assertTrue(coordinator.contains("ScanRegistrationRetirement("))
+        assertTrue(coordinator.contains("retirement.blocked()"))
+        assertTrue(coordinator.contains("retirement.retryRetirement()"))
+        val scanner = source("BandResetController")
+        assertTrue(scanner.contains("retirement.start(ticket)"))
+        assertTrue(scanner.contains("retirement.retire(it)"))
+        assertEquals(1, Regex("scanner\\.stopScan\\(").findAll(scanner).count())
+        assertFalse(scanner.contains("CommandLease.foreground()"))
+        val work = source("BoundedBluetoothWork")
+        assertTrue(work.contains("retirementPool.execute(task)"))
+        val cleanup = work.substringAfter("fun retireExact(")
+        assertFalse(cleanup.contains("NativeWorkAuthority"))
+        assertFalse(cleanup.contains("deadline"))
+        assertFalse(cleanup.contains("CommandLease"))
+    }
+
+    @Test fun `both automatic switch directions use one driver no hidden ordinary calls`() {
+        val coordinator = source("ResetCoordinator")
+        assertTrue(coordinator.contains("driver.execute("))
+        assertTrue(coordinator.contains("engine.completeAndRearm(command, outcome)"))
+        assertFalse(coordinator.contains("if (lease.valid() && serviceDone != null) scheduleServiceTick()"))
+        assertTrue(coordinator.contains("engine.retryRecovery(state)"))
+        assertTrue(coordinator.contains("engine.rearmContinuation(pending)"))
+        assertFalse(source("BandResetController").contains("BluetoothSwitch.disable("))
+        assertFalse(source("ReEnableReceiver").contains("BluetoothSwitch.enable("))
+        for (name in listOf("MainActivity", "PermissionActivity", "ShizukuBluetoothClient", "ResetCoordinator")) {
+            assertFalse(source(name).contains("adapter.enable("))
+            assertFalse(source(name).contains("adapter.disable("))
         }
     }
 
-    @Test fun `manual path never invokes ordinary toggle or target reset`() {
-        for (name in listOf("MainActivity", "ShizukuBluetoothClient", "ShizukuUserServiceBroker", "ShizukuRegistrationBroker",
-            "PrivilegedBluetoothService", "BluetoothDiscovery")) {
-            val text = source(name)
-            for (forbidden in listOf("BluetoothSwitch.enable(", "BluetoothSwitch.disable(", "adapter.enable(",
-                "adapter.disable(", "ACTION_REQUEST_ENABLE", "cycleBluetooth(", "newProcess(", "BandMatcher", "BandResetController(")) {
-                assertFalse("$name must not contain $forbidden", text.contains(forbidden))
-            }
-        }
+    @Test fun `provider remains protected and launcher is genuinely no display`() {
+        val manifest = File("src/main/AndroidManifest.xml").readText()
+        assertTrue(manifest.contains("rikka.shizuku.ShizukuProvider"))
+        assertTrue(manifest.contains("android.permission.INTERACT_ACROSS_USERS_FULL"))
+        assertTrue(manifest.contains(".PermissionActivity"))
+        assertTrue(manifest.contains("Theme.NoDisplay"))
+        assertTrue(manifest.contains("excludeFromRecents=\"true\""))
+        assertTrue(manifest.contains("FOREGROUND_SERVICE"))
+        assertTrue(manifest.contains("connectedDevice"))
+        assertTrue(manifest.contains("${'$'}{applicationId}.action.RUN"))
+        assertFalse(manifest.contains("android.intent.action.BOOT_COMPLETED"))
     }
 
-    @Test fun `user service uses official binding and dedicated process`() {
+    @Test fun `notification tap opens detail activity directly and is immutable`() {
+        val text = source("RunNotification")
+        assertTrue(text.contains("PendingIntent.getActivity("))
+        assertTrue(text.contains("PermissionActivity::class.java"))
+        assertTrue(text.contains("FLAG_IMMUTABLE"))
+        assertFalse(text.contains("PendingIntent.getBroadcast("))
+        assertFalse(text.contains("startActivity("))
+    }
+
+    @Test fun `startup requests automatically with application owned lifetime`() {
+        val text = source("ShizukuBluetoothClient")
+        assertTrue(text.contains("AutomaticAuthorization"))
+        assertTrue(text.contains("addBinderReceivedListenerSticky"))
+        assertTrue(text.contains("Shizuku.isPreV11()"))
+        assertTrue(text.contains("Shizuku.getUid()"))
+        assertFalse(text.contains("newCachedThreadPool"))
+        assertTrue(source("MonitorApplication").contains("Process.myUid()"))
+        assertFalse(source("MainActivity").contains("client.stop()"))
+    }
+
+    @Test fun `user service keeps official binding dedicated process and guarded fixed commands`() {
         val text = source("ShizukuUserServiceBroker")
         assertTrue(text.contains("Shizuku.bindUserService("))
         assertTrue(text.contains("Shizuku.unbindUserService("))
@@ -45,24 +113,13 @@ class ManualSourceBoundaryTest {
         assertFalse(service.contains("android.app.Service"))
         assertTrue(service.contains("Process.myUid()"))
         assertFalse(service.contains("sh -c"))
+        assertTrue(source("PrivilegedBluetoothCommand").contains("listOf(\"/system/bin/svc\", \"bluetooth\""))
+        val aidl = File("src/main/aidl/com/blreay/bluetoothmonitor/IPrivilegedBluetoothService.aidl").readText()
+        assertTrue(aidl.contains("= 1"))
+        assertTrue(aidl.contains("= 16777114"))
     }
 
-    @Test fun `provider is protected and launcher is opaque and in recents`() {
-        val manifest = File("src/main/AndroidManifest.xml").readText()
-        assertTrue(manifest.contains("rikka.shizuku.ShizukuProvider"))
-        assertTrue(manifest.contains("android.permission.INTERACT_ACROSS_USERS_FULL"))
-        assertFalse(manifest.contains(".PermissionActivity"))
-        assertFalse(manifest.contains("Theme.NoDisplay"))
-        assertFalse(manifest.contains("excludeFromRecents=\"true\""))
-    }
-
-    @Test fun `classic completion belongs to an announced discovery session`() {
-        val text = source("BluetoothDiscovery")
-        assertTrue(text.contains("BluetoothAdapter.ACTION_DISCOVERY_STARTED"))
-        assertTrue(text.contains("classicAnnounced"))
-    }
-
-    @Test fun `SDK registrations use one process wide slot and never unsafe false unbind`() {
+    @Test fun `SDK registrations keep one slot exact cleanup and posted death barrier`() {
         val text = source("ShizukuUserServiceBroker")
         assertTrue(text.contains("ShizukuRegistrationBroker<IBinder>"))
         assertTrue(text.contains("management.execute"))
@@ -71,73 +128,31 @@ class ManualSourceBoundaryTest {
         assertFalse(text.contains("registration.connection, false"))
         assertTrue(text.contains("UUID.randomUUID()"))
         assertTrue(text.contains("强制停止本应用"))
+        assertFalse(text.contains("点击申请shizuku权限"))
         val client = source("ShizukuBluetoothClient")
         assertFalse(client.contains("Shizuku.bindUserService("))
         assertFalse(client.contains("Shizuku.unbindUserService("))
         assertTrue(client.contains("ShizukuUserServiceBroker.retire("))
+        assertTrue(client.contains("ShizukuUserServiceBroker.canReconfirm("))
     }
 
-    @Test fun `repeat authorization reconfirms exact live binding before any teardown`() {
-        val text = source("ShizukuBluetoothClient")
-        val connect = text.substringAfter("private fun connect() {").substringBefore("/** Fresh preflight")
-        assertTrue(connect.contains("auth.granted"))
-        assertTrue(connect.contains("endpoint?.isBinderAlive == true"))
-        assertTrue(connect.contains("ShizukuUserServiceBroker.canReconfirm(registration, endpoint)"))
-        assertTrue(connect.indexOf("auth.serviceConnected()") < connect.indexOf("dispose(it)"))
-        assertTrue(connect.indexOf("return") < connect.indexOf("dispose(it)"))
+    @Test fun `classic diagnostic discovery still belongs to announced session`() {
+        val text = source("BluetoothDiscovery")
+        assertTrue(text.contains("BluetoothAdapter.ACTION_DISCOVERY_STARTED"))
+        assertTrue(text.contains("classicAnnounced"))
     }
 
-    @Test fun `quarantine remains explicit across UI reopen instead of offering transparent retries`() {
-        val text = source("ShizukuBluetoothClient")
-        assertTrue(text.contains("if (ShizukuUserServiceBroker.quarantined)"))
-        assertTrue(text.contains("ShizukuUserServiceBroker.quarantined -> ShizukuUserServiceBroker.UNAVAILABLE"))
-    }
-
-    @Test fun `queued binder listeners are harmless after lifecycle close`() {
-        val text = source("ShizukuBluetoothClient")
-        assertTrue(text.contains("if (!started) return@OnBinderReceivedListener"))
-        assertTrue(text.contains("if (!started) return@OnBinderDeadListener"))
-        assertTrue(text.contains("private fun createReceived(life: Int)"))
-        assertTrue(text.contains("private fun createDead(life: Int)"))
-        assertTrue(text.contains("private fun createPermissionResult(life: Int)"))
-    }
-
-    @Test fun `startup status RPC is tracked bounded and lifecycle canceled`() {
-        val text = source("ShizukuBluetoothClient")
-        assertTrue(text.contains("statusRead = statusIo.submit"))
-        assertTrue(text.contains("auth.timeoutStatusRead(token)"))
-        assertTrue(text.contains("statusRead?.cancel(true)"))
-        assertTrue(text.contains("statusIo.remove("))
-        assertTrue(text.contains("ArrayBlockingQueue(1)"))
-        assertTrue(text.contains("shizuku授权状态未知"))
-    }
-
-    @Test fun `whole manual page scrolls including verbose operation status`() {
-        val text = source("MainActivity")
-        assertTrue(text.contains("setContentView(pageScroll)"))
-        assertTrue(text.contains("addView(root)"))
-        assertFalse(text.contains("MATCH_PARENT, 0, 1f"))
-    }
-
-    @Test fun `legacy permission hint points to the explicit scan button`() {
-        val text = source("TriggerReceiver")
-        assertTrue(text.contains("点击扫描蓝牙"))
-        assertFalse(text.contains("launch the app icon once"))
-        assertFalse(text.contains("launching the icon once"))
-    }
-
-    @Test fun `authorization click waits for automatic provider binder without private registration`() {
-        val text = source("ShizukuBluetoothClient")
-        assertTrue(text.contains("awaitingBinder"))
-        assertTrue(text.contains("Thread.sleep(100)"))
-        assertFalse(text.contains("requestBinderForNonProviderProcess"))
-    }
-
-    @Test fun `legacy scan and alarm are gated by shared manual interlock`() {
-        assertTrue(source("BandResetController").contains("isLegacyCurrent("))
-        assertTrue(source("ReEnableReceiver").contains("manualActive"))
-        val text = source("MainActivity")
-        assertTrue(text.contains("ReEnableScheduler.cancel("))
-        assertTrue(text.contains("PendingResetStore.clear("))
+    @Test fun `runner destroy is terminal before short spawn lock and never shells caller input`() {
+        val text = source("BluetoothCommandRunner")
+        assertTrue(text.contains("AtomicBoolean(false)"))
+        val destroy = text.substringAfter("fun destroyChild() {").substringBefore("private fun stoppedResult")
+        assertTrue(destroy.indexOf("terminal.set(true)") >= 0)
+        assertTrue(destroy.indexOf("terminal.set(true)") < destroy.indexOf("synchronized(spawnLock) { child.getAndSet"))
+        assertTrue(text.contains("ProcessBuilder(it)"))
+        assertFalse(text.contains("sh -c"))
+        for (name in listOf("ShizukuBluetoothClient", "PrivilegedBluetoothService")) {
+            assertFalse(source(name).contains("newProcess("))
+            assertFalse(source(name).contains("requestBinderForNonProviderProcess"))
+        }
     }
 }

@@ -3,63 +3,75 @@ package com.blreay.bluetoothmonitor
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
 
-/**
- * Retained legacy fast-phase service. The manual launcher UI never starts it.
- *
- * Started, not foreground: a foreground Service would put a notification in
- * the status bar, and Android 12+ throws
- * ForegroundServiceStartNotAllowedException when a background app starts one
- * - which would break the sendBroadcast entry point outright.
- *
- * Callers must obey the platform's background-service restrictions. The fast
- * phase is bounded at 8s. If MIUI reclaims it mid-scan, nothing has been armed
- * yet and Bluetooth is still on - there is no half-state to recover from.
- *
- * The slow phase is not here. It belongs to [ReEnableReceiver] and survives
- * this Service being stopped, which is the whole reason it was split out.
- */
+/** Short foreground scan/recovery owner, not sticky and never a periodic/24-hour monitor. */
 class ResetService : Service() {
-
+    private var ownedTicket: ForegroundAdmission.Ticket? = null
+    private var ownedStartId = 0
     override fun onBind(intent: Intent?): IBinder? = null
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val wantsToast = intent?.getBooleanExtra(Notifier.EXTRA_TOAST, false) ?: false
-        Log.i(TAG, "fast phase starting (wantsToast=$wantsToast)")
-
-        BandResetController(applicationContext).run(SCAN_TIMEOUT_MS, wantsToast) { result ->
-            Log.i(TAG, "result=$result")
-            // Whatever happened, this Service is done. On RESET_TRIGGERED the
-            // alarm chain now owns the outcome and does not need us alive -
-            // v1 kept its Activity alive here, and holding input focus for
-            // seconds is what made the home screen feel frozen.
-            stopSelf()
+        val id = intent?.getStringExtra(EXTRA_RUN)
+        val token = intent?.getStringExtra(EXTRA_ADMISSION)
+        val ticket = if (id != null && !token.isNullOrEmpty()) ForegroundAdmission.Ticket(id, token) else null
+        val coordinator = ResetCoordinator.get(this)
+        if (ownedTicket != null) {
+            // A stale/duplicate startId must neither demote nor stop the current exact owner.
+            ownedStartId = startId
+            return START_NOT_STICKY
         }
-
-        // Not sticky: if the system kills this, restarting it would begin a
-        // second scan for no reason. A slow phase already in flight is driven
-        // by alarms, which do not need this Service.
+        if (ticket == null || !coordinator.serviceAdmissionCurrent(ticket)) {
+            // Process recreation or an expired admission cannot create a scan/FGS owner.
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        if (!BtPermissions.allGranted(this)) {
+            coordinator.serviceAdmissionFailed(ticket, "附近设备 SCAN/CONNECT 权限未满足")
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        try {
+            startForeground(RunNotification.ONGOING_ID, RunNotification.ongoing(this), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } catch (e: Exception) {
+            Log.e("BtReset.Svc", "foreground admission failed", e)
+            coordinator.serviceAdmissionFailed(ticket, e.javaClass.simpleName)
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        ownedTicket = ticket
+        ownedStartId = startId
+        coordinator.serviceStarted(ticket) {
+            if (ownedTicket == ticket) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                ownedTicket = null
+                stopSelfResult(ownedStartId)
+            }
+        }
         return START_NOT_STICKY
     }
-
+    override fun onDestroy() {
+        ownedTicket?.let { ResetCoordinator.get(this).serviceGone(it) }
+        ownedTicket = null
+        super.onDestroy()
+    }
     companion object {
-        private const val TAG = "BtReset.Svc"
-
-        /**
-         * The Service has no goAsync() budget to fit inside, unlike
-         * [TriggerReceiver], so it can afford the longer window.
-         */
         const val SCAN_TIMEOUT_MS = 8_000L
-
-        /**
-         * Explicit legacy service entry. Not used by the manual UI.
-         */
-        fun start(context: Context, wantsToast: Boolean) {
-            val intent = Intent(context, ResetService::class.java)
-                .putExtra(Notifier.EXTRA_TOAST, wantsToast)
-            context.startService(intent)
+        private const val EXTRA_RUN = "run_owner"
+        private const val EXTRA_ADMISSION = "foreground_admission"
+        fun tryStart(context: Context, ticket: ForegroundAdmission.Ticket): Boolean {
+            if (!BtPermissions.allGranted(context)) return false
+            return try {
+                context.startForegroundService(Intent(context, ResetService::class.java)
+                    .setAction("${context.packageName}.action.WORK")
+                    .putExtra(EXTRA_RUN, ticket.runId).putExtra(EXTRA_ADMISSION, ticket.token))
+                true
+            } catch (e: Exception) {
+                // Includes background-start and connectedDevice prerequisite/security restrictions.
+                Log.w("BtReset.Svc", "legal FGS handoff refused; bounded receiver/app path only", e)
+                false
+            }
         }
     }
 }

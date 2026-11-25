@@ -44,7 +44,7 @@ class BluetoothCommandRunnerTest {
             publish.countDown()
             shutdown.get(1, TimeUnit.SECONDS)
             assertFalse(process.isAlive)
-            assertEquals(BluetoothCommandResult.Status.ERROR, operation.get(1, TimeUnit.SECONDS).status)
+            assertEquals(BluetoothCommandResult.Status.UNCERTAIN, operation.get(1, TimeUnit.SECONDS).status)
         } finally {
             publish.countDown()
             process.destroyForcibly()
@@ -59,7 +59,7 @@ class BluetoothCommandRunnerTest {
         runner.destroyChild()
         val result = runner.run(listOf("fixed-test-command"), 50)
         assertFalse(spawned)
-        assertEquals(BluetoothCommandResult.Status.ERROR, result.status)
+        assertEquals(BluetoothCommandResult.Status.NOT_INVOKED, result.status)
     }
 
     @Test fun `destroy never waits behind the long command wait`() {
@@ -74,7 +74,7 @@ class BluetoothCommandRunnerTest {
             val before = System.nanoTime()
             runner.destroyChild()
             assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - before) < 500)
-            assertEquals(BluetoothCommandResult.Status.ERROR, operation.get(1, TimeUnit.SECONDS).status)
+            assertEquals(BluetoothCommandResult.Status.UNCERTAIN, operation.get(1, TimeUnit.SECONDS).status)
         } finally { process.destroyForcibly(); runner.destroyChild(); worker.shutdownNow() }
     }
 
@@ -90,6 +90,131 @@ class BluetoothCommandRunnerTest {
         override fun destroy() { alive.set(false); done.countDown() }
         override fun destroyForcibly(): Process { destroy(); return this }
         override fun isAlive(): Boolean = alive.get()
+    }
+
+    @Test fun `exited wrapper with inherited open pipe keeps descendant authority unresolved and runner bounded`() {
+        val release = CountDownLatch(1)
+        val reading = CountDownLatch(1)
+        val process = object : Process() {
+            override fun getInputStream() = object : java.io.InputStream() {
+                override fun read(): Int { reading.countDown(); release.await(); return -1 }
+                override fun close() { release.await() }
+            }
+            override fun getErrorStream() = ByteArrayInputStream(byteArrayOf())
+            override fun getOutputStream() = ByteArrayOutputStream()
+            override fun waitFor() = 0
+            override fun waitFor(timeout: Long, unit: TimeUnit) = true
+            override fun exitValue() = 0
+            override fun destroy() { }
+            override fun isAlive() = false
+        }
+        var spawns = 0
+        val runner = BluetoothCommandRunner { spawns++; process }
+        try {
+            val first = runner.run(listOf("fixed-test-command"), 100)
+            assertEquals(BluetoothCommandResult.Status.UNCERTAIN, first.status)
+            assertFalse("Direct wrapper exit cannot exclude a pipe-holding descendant", first.authorityEnded)
+            assertTrue(reading.await(1, TimeUnit.SECONDS))
+            repeat(5) {
+                val refused = runner.run(listOf("fixed-test-command"), 100)
+                assertEquals(BluetoothCommandResult.Status.NOT_INVOKED, refused.status)
+                assertFalse("Terminal refusal cannot end inherited descendant authority", refused.authorityEnded)
+            }
+            assertEquals(1, spawns)
+        } finally { release.countDown(); runner.destroyChild() }
+    }
+
+    @Test fun `killed wrapper with inherited pipe holder is not a command tree execution fence`() {
+        val release = CountDownLatch(1)
+        val reading = CountDownLatch(1)
+        var waits = 0
+        val process = object : Process() {
+            override fun getInputStream() = object : java.io.InputStream() {
+                override fun read(): Int { reading.countDown(); release.await(); return -1 }
+                override fun close() { release.await() }
+            }
+            override fun getErrorStream() = ByteArrayInputStream(byteArrayOf())
+            override fun getOutputStream() = ByteArrayOutputStream()
+            override fun waitFor() = 0
+            override fun waitFor(timeout: Long, unit: TimeUnit): Boolean { waits++; return waits > 1 }
+            override fun exitValue() = 0
+            override fun destroy() { }
+            override fun destroyForcibly(): Process = this
+            override fun isAlive() = false
+        }
+        val runner = BluetoothCommandRunner { process }
+        try {
+            val result = runner.run(listOf("fixed-test-command"), 100)
+            assertTrue(reading.await(1, TimeUnit.SECONDS))
+            assertEquals(2, waits)
+            assertEquals(BluetoothCommandResult.Status.UNCERTAIN, result.status)
+            assertFalse("Killed direct wrapper does not rule out the inherited pipe holder", result.authorityEnded)
+            val refused = runner.run(listOf("fixed-test-command"), 100)
+            assertEquals(BluetoothCommandResult.Status.NOT_INVOKED, refused.status)
+            assertFalse(refused.authorityEnded)
+        } finally { release.countDown(); runner.destroyChild() }
+    }
+
+    @Test fun `terminal not invoked does not establish quiescence of an older unkillable child`() {
+        val release = CountDownLatch(1)
+        val reading = CountDownLatch(1)
+        val process = object : Process() {
+            override fun getInputStream() = object : java.io.InputStream() {
+                override fun read(): Int { reading.countDown(); release.await(); return -1 }
+                override fun close() { release.await() }
+            }
+            override fun getErrorStream() = ByteArrayInputStream(byteArrayOf())
+            override fun getOutputStream() = ByteArrayOutputStream()
+            override fun waitFor(): Int = throw IllegalStateException("child did not exit")
+            override fun waitFor(timeout: Long, unit: TimeUnit) = false
+            override fun exitValue(): Int = throw IllegalThreadStateException()
+            override fun destroy() { }
+            override fun destroyForcibly(): Process = this
+            override fun isAlive() = true
+        }
+        var spawns = 0
+        val runner = BluetoothCommandRunner { spawns++; process }
+        try {
+            val timeout = runner.run(listOf("fixed-test-command"), 100)
+            assertEquals(BluetoothCommandResult.Status.UNCERTAIN, timeout.status)
+            assertFalse(timeout.authorityEnded)
+            assertTrue(reading.await(1, TimeUnit.SECONDS))
+            assertTrue(process.isAlive)
+            val refused = runner.run(listOf("fixed-test-command"), 100)
+            assertEquals(BluetoothCommandResult.Status.NOT_INVOKED, refused.status)
+            assertFalse("Old child remains live; terminal refusal is not an execution fence", refused.authorityEnded)
+            assertEquals(1, spawns)
+        } finally { release.countDown(); runner.destroyChild() }
+    }
+
+    @Test fun `reader failure before EOF cannot establish ended authority even when wrapper exits`() {
+        for (failure in listOf(java.io.IOException("inherited pipe failed"), java.io.InterruptedIOException("reader interrupted"))) {
+            val attemptedRead = CountDownLatch(1)
+            val process = object : Process() {
+                override fun getInputStream() = object : java.io.InputStream() {
+                    override fun read(): Int { attemptedRead.countDown(); throw failure }
+                }
+                override fun getErrorStream() = ByteArrayInputStream(byteArrayOf())
+                override fun getOutputStream() = ByteArrayOutputStream()
+                override fun waitFor() = 0
+                override fun waitFor(timeout: Long, unit: TimeUnit) = true
+                override fun exitValue() = 0
+                override fun destroy() { }
+                override fun isAlive() = false
+            }
+            var spawns = 0
+            val runner = BluetoothCommandRunner { spawns++; process }
+            try {
+                val result = runner.run(listOf("fixed-test-command"), 100)
+                assertTrue(attemptedRead.await(1, TimeUnit.SECONDS))
+                assertEquals(BluetoothCommandResult.Status.UNCERTAIN, result.status)
+                assertFalse("Reader termination without EOF cannot exclude descendant execution", result.authorityEnded)
+                val refused = runner.run(listOf("fixed-test-command"), 100)
+                assertEquals(BluetoothCommandResult.Status.NOT_INVOKED, refused.status)
+                assertFalse(refused.authorityEnded)
+                assertEquals(1, spawns)
+            } finally { runner.destroyChild() }
+        }
     }
 
     @Test fun `output is drained beyond the saved cap so a large pipe cannot block completion`() {

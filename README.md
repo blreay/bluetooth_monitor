@@ -1,161 +1,164 @@
-# 蓝牙重启 / Shizuku 蓝牙控制
+# 蓝牙手环重启 · 后台 Shizuku 优先版
 
-一个有可见操作页面的 Android 小工具。**打开应用只显示页面，不自动扫描、申请权限或重启蓝牙。**
+本分支 `bluetooth_monitor_shizuku_nogui` 是独立安装的后台版本。**正常启动没有控制页面，也不显示透明占位窗口：自动检测并申请首次 Shizuku 授权，后台扫描目标手环，找到才重启手机蓝牙。**
 
-页面提供四个按钮：
+旧版可见四按钮工具仍在 `bluetooth_monitor_shizuku` 分支；本版本不是给那个页面增加一个隐藏开关。
 
-| 按钮 | 行为 |
+## 使用方式
+
+1. 安装后台版 APK。包名 **`com.blreay.bluetoothmonitor.nogui`**、release 签名均与旧版不同，旧版不需要卸载。
+2. 点击后台版图标。首次必要时允许「附近的设备」权限；允许通知，才能看到运行模式和结果。
+3. 应用启动即检测 Shizuku。若已启动且支持本应用，会自动申请第一次授权，在 Shizuku 对话框中允许；**没有每次都要点的授权按钮**。已授权时直接检查/连接。
+4. 执行一次 BLE 扫描。当前广告命中 `Xiaomi Smart Band 8 35BA` 后才关闭手机蓝牙，再等待实际 OFF 后请求恢复 ON。没有找到就不切换。
+5. 运行和恢复通过静默通知说明。需要详细原因或重新授权时，点击通知打开真正的详情/设置对话框。
+
+后台版的数据、附近设备权限和 Shizuku 授权与旧安装独立，需单独完成首次授权。第一次的系统权限/Shizuku授权可能需要参与，普通后备也允许必要的系统确认；这些是例外，不是常规启动页面。拒绝附近设备权限时，不进行扫描或假称已经重启。
+
+这是**一次启动、一次检测**，不是全天监控；没有开机自动运行或周期扫描。它重启的是手机整个蓝牙无线电，可能暂时断开耳机等其它设备。它不直接配对、连接或重置手环，重连由 Mi Fitness 等拥有连接的应用自行完成。
+
+## Shizuku 优先与普通后备
+
+初始关闭和每次恢复开启都走同一个异步开关驱动，分别检测当前 Shizuku 能力；不是「Shizuku 关闭、固定普通开启」。
+
+| 情况 | 行为 |
 |---|---|
-| **申请shizuku权限** | 主动向正在运行的 Shizuku 请求授权；实际授权成功后显示「shizuku授权成功」，并连接高权限服务 |
-| **关闭蓝牙** | 通过 Shizuku 的 shell/root 身份请求关闭蓝牙；不会自动重新开启 |
-| **打开蓝牙** | 通过同一高权限路径请求开启蓝牙 |
-| **扫描蓝牙** | 手动发现附近的 BLE / 经典蓝牙设备，实时显示名称、MAC、RSSI 和发现类型 |
+| Shizuku 已授权、专用服务可用 | shell/root 高权限路径执行固定 `svc bluetooth enable/disable`，尽量避免普通系统开关确认 |
+| 未检测到 manager、没有可用连接、未授权、版本不支持或连接失败 | 通知说明观察到的原因，自动尝试普通开关路径，不等待用户点击详情 |
+| 系统/厂商没有完成高权限请求 | 检查实际状态与旧请求执行情况，满足安全条件后转普通路径 |
+| 旧请求超时/结果不确定 | 不盲目重复关闭；保留恢复观察，说明后备推迟及必要处理 |
+| 普通接口拒绝、权限缺失或通知被关闭 | 如实记录，不能保证执行或用户一定看到提示 |
 
-扫描只列出设备，**即使找到目标手环，也不重启、配对或连接设备**。开关按钮不使用普通应用的 `BluetoothAdapter.enable()/disable()`，也不会降级到系统确认弹窗路径。
+普通路径保留 `targetSdk=32`，使用原有 `BluetoothAdapter.enable()/disable()`，仍可能弹出 MIUI/HyperOS 确认或被厂商拒绝。不能承诺所有手机完全无弹窗。
 
-## 使用方法
+首次实际自动授权尝试会记住；无 Binder 时不消耗这次尝试。拒绝/超时后不反复弹授权框，可通过通知详情显式重试。手机重启后通常仍需要按 [Shizuku](https://shizuku.rikka.app/) 的说明重新启动它；本应用不能替用户完成无线调试配对。
 
-1. 安装并启动 [Shizuku](https://shizuku.rikka.app/)。可按 Shizuku 的指引使用无线调试、adb 或 root 启动。
-2. 打开本应用，点击 **申请shizuku权限**，在 Shizuku 的授权对话框中允许。
-3. 页面显示 **shizuku授权成功**。高权限服务连接成功后，点击 **关闭蓝牙** 或 **打开蓝牙**。
-4. 点击 **扫描蓝牙**。首次扫描时，系统会请求「附近的设备」权限；允许后才开始本次扫描。
+**诊断边界：** Shizuku 公共客户端接口不能可靠区分「未启动」与「尚未配对」，所以会说明「未连接，可能未启动或未完成配对」，不会从一个 ping 失败伪造确定原因。可用 Sui/root Binder 也不会只因 manager 应用未安装就被拒绝。为保留非 daemon 服务及安全清理，本后台版仅接纳 server API13及以上；过旧的服务会说明原因并转普通模式，建议更新 Shizuku。SDK 授权状态可能缓存，不宣称每次检查都是无缓存的服务器校验。
 
-应用通过官方 Shizuku Provider 注册并接收 Binder；授权按钮主动发起权限申请，Binder 尚未到达时会有限等待，不调用私有注册接口。启动页面不会主动申请授权。
+SDK 异常连接可能进入安全隔离。此时不接纳迟到的旧服务、不无限重绑，也不自动强制停止应用；通知会指导必要时在系统设置中强行停止后台版后重开，**不要求卸载**。可用普通后备不受这条高权限连接隔离影响。
 
-Shizuku 授权对话框和首次扫描的「附近的设备」权限框是必要的授权过程，**不是蓝牙开关确认框**。高权限开关不为读取状态额外申请附近设备权限。
+## 通知与结果
 
-Shizuku 停止、授权拒绝/撤销、服务连接失败或系统拒绝执行时，页面会显示原因；不会静默改用普通开关 API。手机重启后通常需要先重新启动 Shizuku。
+- **Shizuku shell / Shizuku root**：本阶段真正尝试了相应高权限路径。
+- **普通模式**：本阶段使用普通应用开关。
+- **混合模式**：例如高权限关闭之后，因 Shizuku 断开改用普通开启。
+- **尚未切换**：未命中目标、缺少必要条件，或只检查授权尚未发出开关。
 
-如果高权限服务在连接超时前从未返回 Binder，官方 SDK 的本地连接可能无法安全释放。应用会隔离这次未完成连接，不继续创建新连接或冒认迟到的旧服务；页面若提示重启应用，请在系统设置中**强行停止本应用，再重新打开**，不需要卸载。这是异常连接状态的安全恢复步骤，不是每次授权都需要；扫描功能仍独立于 Shizuku。
+授权成功不等于本次已使用高权限，也不等于蓝牙重启成功。
 
-### 开关结果如何理解
+- 「请求已提交」不是实际 ON/OFF；系统切换是异步的。
+- 只有观察到 OFF 才请求恢复，不在 TURNING_OFF 时盲目开启。
+- 只有实际观察到 ON 才报告恢复成功。
+- 超时/失败说明最后观察状态，不武断声称一定 ON 或一定 OFF。
+- 活动服务通知与最终结果通知分开；详情通过直接 Activity PendingIntent 打开，不由后台服务强行抢前台。
 
-- **请求已提交**：高权限命令已经返回，不代表蓝牙硬件完成了异步切换。
-- 已有「附近的设备」权限时，应用会在有限时间内检查真实状态，确认 ON/OFF 后才显示已打开/已关闭。
-- 没有读取状态的权限时，会明确说明无法确认最终状态；可查看系统蓝牙开关，或授予扫描所需权限后再次操作。
-- 超时、错误或 OEM 限制会显示失败/未确认，不会冒充成功或回退到普通 API。
+通知被用户或渠道关闭时，详情仍可持久记录并写日志，Toast 只是尽力提示，不能保证送达。首次设置会创建通知渠道，Android13+ 在 target32 下由系统决定通知授权时机。
 
-手动开关会取消本应用遗留的自动恢复链，并使旧的在途重置扫描失效，避免刚手动关闭就被旧闹钟重新打开。开关和扫描不会同时运行。
+## 自动化入口
 
-### 扫描结果如何理解
+应用源码类 namespace 保持原值，与新安装包名不同。请使用**完整组件名**，不要把新包名后面的 `.MainActivity` 简写当成真实类名。
 
-- 先进行约 **8 秒 BLE 扫描**，再进行最多 **15 秒经典蓝牙发现**。结果实时更新，总时长约 23 秒以内。
-- 每次实际开始新扫描时清空上一次结果；结束后保留本次结果。
-- 同一 MAC 只列一次，重复发现更新 RSSI；同一设备被 BLE 和经典发现时合并类型。没有名称时显示「未知设备」。
-- 列表只包含**本次实际发现**的设备，不把已配对缓存混作扫描结果。
-- 蓝牙未开启/正在切换时，扫描只提示先打开，不会隐式切换蓝牙。旧自动恢复尚未完成时，扫描提示等待，不中断必要的恢复。
-- 离开页面会停止扫描。打开、重开页面或旋转屏幕不会自行开始新的扫描。
-- 单个扫描阶段失败时保留已有结果，并说明哪个阶段未完成。
+Activity Intent：
 
-BLE 外设不广播、经典设备未进入可发现模式时可能扫不到。**设置里能看到已配对设备，不代表它当前能被扫描发现。**
-
-Android 还限制短时间内频繁启动 BLE 扫描；超额可能静默不给结果。错误码 2 是扫描客户端注册失败，不是该限流。零设备也可能只是附近没有可发现设备，不能仅凭零结果认定限流。
-
-## 下载
-
-`main` 每次 push 自动更新固定下载地址，签名不变，可以覆盖安装：
-
-```
-https://github.com/blreay/bluetooth_monitor/releases/download/latest/bt-reset.apk
+```text
+Action:   com.blreay.bluetoothmonitor.nogui.action.RUN
+Package:  com.blreay.bluetoothmonitor.nogui
+Class:    com.blreay.bluetoothmonitor.MainActivity
 ```
 
-**功能分支的修改不会自动更新这个 `latest` APK。** 工作流只在 `main` push 或手动 dispatch 时运行；使用分支代码测试时需自行构建，或等待该功能合入 `main`。
-
-安装时需要允许「未知来源」。同签名覆盖安装可保留已经授予的应用权限。
-
-## 页面入口
-
-以下入口现在都只打开控制页面，不启动自动扫描：
-
-- 点击桌面图标 **蓝牙重启**。
-- Tasker / MacroDroid / Automate 发 Activity Intent：
-
-  ```
-  Action:   com.blreay.bluetoothmonitor.action.RUN
-  Package:  com.blreay.bluetoothmonitor
-  Class:    com.blreay.bluetoothmonitor.MainActivity
-  ```
-
-- adb：
-
-  ```bash
-  adb shell am start -n com.blreay.bluetoothmonitor/.MainActivity
-  ```
-
-普通后台应用启动 Activity 仍受 Android 10+ 的后台启动限制。
-
-## 兼容：显式广播自动重置手环
-
-为了保留已有自动化脚本，下面这个**独立广播入口**仍执行原有逻辑，**不是页面扫描按钮的行为**：
+adb 启动一次后台检测：
 
 ```bash
-adb shell am broadcast -a com.blreay.bluetoothmonitor.action.RESET_IF_PRESENT
+adb shell am start \
+  -n com.blreay.bluetoothmonitor.nogui/com.blreay.bluetoothmonitor.MainActivity \
+  -a com.blreay.bluetoothmonitor.nogui.action.RUN
 ```
 
-广播入口使用 6 秒 BLE 扫描，命中 `Xiaomi Smart Band 8 35BA` 后关闭蓝牙，再交由状态驱动的闹钟链重新开启。它不直接连接手环，连接恢复由 Mi Fitness 等原应用自行完成。
+显式广播（限定新包，避免旧安装同时执行）：
 
-此兼容路径仍使用原来的普通应用蓝牙接口，**不具备新页面 Shizuku 开关的高权限保证**。如果不需要自动重置，直接使用页面上的四个按钮即可，不要发送该广播。手动操作期间旧重置扫描不能再切换蓝牙。
+```bash
+adb shell am broadcast \
+  -a com.blreay.bluetoothmonitor.nogui.action.RESET_IF_PRESENT \
+  -p com.blreay.bluetoothmonitor.nogui
+```
 
-### 旧广播路径的 MIUI / HyperOS 设置
+Tasker/MacroDroid 等可使用这些入口，但 Android 的后台 Activity/foreground-service 启动限制仍生效。受限广播保持有界扫描；命中后先保存 job，再通过恢复调度继续，不在广播的约10秒生命周期内无限等待授权/RPC。
 
-下面是**旧自动重置路径**的要求，不是 Shizuku 开关的前提：
+## 恢复与厂商限制
 
-| 设置项 | 作用 |
+关闭之前先确认恢复状态已持久写入、下一次 alarm 已安排，失败就不关闭。重复入口不会覆盖已经进行中的重启；冷进程依据 durable run/command 状态恢复，不把上一进程退出当旧命令一定停止。
+
+Android/OEM 可以延迟 alarm、提前回收进程、限制自启动；**尝试次数不是保证的墙钟秒数**。系统强行停止或重启也不是普通进程回收，本版本没有 boot receiver，不能承诺这两种情况自动恢复。再次运行会先处理已有 pending，而不是直接再关闭。
+
+若旧命令或其继承输出的子进程是否结束仍不确定，会保留 pending 并拒绝危险的重复/反向切换；即使当前看到 OFF，也不能把它当成旧请求已停止的证明。这种安全隔离可能阻止自动恢复，需手动检查蓝牙状态。用于 SDK 连接隔离的「强停后重开」不会被当成旧开关命令已经结束的证明。
+
+MIUI/HyperOS 可按需设置：
+
+| 设置 | 作用 |
 |---|---|
-| 应用权限管理 → 开关蓝牙 → 允许 | 避免旧普通应用开关路径被 MIUI 确认框拦住 |
-| 自启动 → 开 | 允许旧恢复闹钟在进程被回收后继续重新开启蓝牙 |
-| 省电策略 → 无限制 | 减少旧后台扫描被提前终止 |
-| 附近的设备 → 允许 | 允许旧广播扫描以及读取/控制蓝牙 |
+| 附近的设备 → 允许 | 真实扫描与读取状态/普通后备所需 |
+| 通知 → 允许 | 查看模式、失败详情、恢复结果 |
+| 应用权限 → 开关蓝牙 → 允许 | 减少普通后备的厂商确认/拒绝，不是高权限授权本身 |
+| 自启动 / 省电策略 → 允许后台或无限制 | 减少后台扫描/恢复被限制；不等于本应用新增开机启动 |
 
-旧恢复链只在观察到 `STATE_OFF` 后请求开启，不在 `STATE_TURNING_OFF` 时盲目开启；最多 120 跳后放弃。它的状态落盘在 SharedPreferences 中，进程被杀后由 alarm 继续。
+两安装虽可并存，控制的是同一个物理蓝牙；不建议同时触发两个版本的开关/恢复任务。
 
-`targetSdk` 暂时保留 32，以保持**这条旧路径**的兼容性。新页面的开关使用 Shizuku UserService，不以普通应用的 targetSdk 豁免作为控制方式；不要为消除 lint 警告直接升级 SDK 而破坏旧路径。
+## APK 与构建
 
-### 旧广播运行结果
+本分支的交付文件名为 **`bt-monitor-nogui.apk`**，本次已验证的本地路径：
 
-旧广播的每次运行都会在「运行结果」通知渠道留一条静默结果；关闭通知时退化为 Toast。正文附带扫描时长、设备数和失败原因，命中手环与恢复成功另有 Toast。
-
-想让每个旧广播结局都弹 Toast：
-
-```bash
-adb shell am broadcast -a com.blreay.bluetoothmonitor.action.RESET_IF_PRESENT --ez toast true
+```text
+app/build/outputs/apk/release/bt-monitor-nogui.apk
 ```
 
-修改旧广播的目标手环：编辑 `app/src/main/java/com/blreay/bluetoothmonitor/BandMatcher.kt` 中的 `TARGET_NAME`、`TARGET_NAME_PREFIX` 和 `TARGET_MAC_SUFFIX`。这些匹配常量**不会过滤新页面的设备列表**。
+2026-11-25 交付文件：2339669 字节，versionCode1/versionName1.0。
 
-## 自己构建
+```text
+APK SHA-256: 999119f1a9fee387f52d99df437215a421cf5800a89059cd07f52fa048d2e518
+证书 SHA-256: 7825ccfb3eb4fa47d7bd87ff70c82800fb0801d67907c69d2825f6c2bb492c9a
+```
 
-需要 JDK 17、Android SDK platform 34 + build-tools 34.0.0：
+主会话对最终源码两次完整重跑：181 项 JVM 测试，零失败/错误/跳过，debug/release 构建成功；新证书有效且重复构建稳定。独立规格、质量及最终整体审查通过。Lint 保留1项 `ExpiredTargetSdkVersion` Fatal及12项Warning，并非lint-clean。没有连接的adb设备，真机验证未执行。
+
+已有 `main` 的 `latest/bt-reset.apk` 仍是原滚动产物，**不是后台新版**；功能分支 push 不自动发布它。本任务不合并 main 或手动触发发布工作流。
+
+JDK17、SDK platform34/build-tools34.0.0：
 
 ```bash
-./gradlew testReleaseUnitTest assembleDebug assembleRelease
+./gradlew testReleaseUnitTest assembleDebug
 # debug：app/build/outputs/apk/debug/app-debug.apk
+```
+
+release 需你自己的仓库外私密签名配置，默认：
+
+```text
+~/.local/share/bluetooth-monitor-nogui/signing.properties
+```
+
+文件包含 `BT_NOGUI_STORE_FILE`、`BT_NOGUI_STORE_PASSWORD`、`BT_NOGUI_KEY_ALIAS`、`BT_NOGUI_KEY_PASSWORD`，指向持久 JKS。限制文件访问并备份；**不要把私钥/口令提交 git**。缺配置的 release 明确失败，不退回仓库中旧公开密钥或 debug key。换机器构建要恢复同一密钥，不能每次生成新证书。
+
+```bash
+BT_NOGUI_SIGNING_PROPERTIES="$HOME/.local/share/bluetooth-monitor-nogui/signing.properties" \
+  ./gradlew testReleaseUnitTest assembleRelease
 # release：app/build/outputs/apk/release/app-release.apk
 ```
 
-release 签名使用仓库里的 `keystore/release.jks` 和 `gradle.properties`。该密钥仅用于这个私人工具，公开提交是为了保持跨构建签名一致，不代表其他身份。
-
-本开发环境已有缓存工具链，默认 JAVA_HOME 不适用时使用：
+当前开发环境使用缓存工具链：
 
 ```bash
 source /home/admin/.cache/btreset-build/env.sh
 "$BTRESET_GRADLE" -p /home/admin/git/bluetooth_monitor_shizuku \
-  testReleaseUnitTest assembleDebug assembleRelease lintDebug --stacktrace
+  testReleaseUnitTest assembleDebug assembleRelease lintDebug \
+  --rerun-tasks --stacktrace --console=plain
 ```
 
-本地默认 versionCode 为 1，CI 用 `GITHUB_RUN_NUMBER + 1`。覆盖安装已有更高版本号时，需要构建时提供合适的运行号；不要为测试而卸载导致权限丢失。
+共享构建主机发生资源压力时，可仅对当前命令追加 `--max-workers=2 --no-parallel`，或通过临时 `GRADLE_OPTS` 限制并发；不改变测试断言、5秒 JVM fixture 或生产超时。默认并发下曾出现两次原有 JVM fixture 超时，临时限流的完整重跑通过；这支持环境压力假说，但没有证明原始根因，详见验证记录。
 
-## 工作原理
+本地 versionCode 默认1，沿用 `GITHUB_RUN_NUMBER+1` 的版本逻辑。独立包首次安装不受旧包版本号影响；以后更新后台版本仍需同签名与不低于已安装版本的版本号。
 
-- **MainActivity**：正常可见页面，只由按钮触发授权、开关和扫描。
-- **Shizuku 客户端**：真实授权检查、Binder 生命周期和专用 UserService 连接。
-- **高权限 UserService**：shell/root UID 下执行固定 `/system/bin/svc bluetooth enable|disable`，通过系统管理接口控制蓝牙；没有普通 API fallback。
-- **独立 discovery scanner**：BLE 和经典发现、MAC 去重、实时设备列表、超时与生命周期清理，不包含手环匹配/重置。
-- **手动操作门闩**：使旧在途自动重置失效，防止旧回调/恢复 alarm 抢回手动控制。
-- **TriggerReceiver / ReEnableReceiver**：保留独立的旧广播自动化与状态驱动恢复协议。
+设计与实际验证记录：
 
-历史自动重置设计：`docs/superpowers/specs/2026-11-21-bluetooth-band-reset-v2-design.md`。
+- [后台版设计](docs/superpowers/specs/2026-11-25-headless-shizuku-reset-design.md)
+- [实施与验证记录](docs/superpowers/plans/2026-11-25-headless-shizuku-reset.md)
+- [已验收的手动页面设计](docs/superpowers/specs/2026-11-24-manual-shizuku-control-design.md)
 
-新手动页面设计：`docs/superpowers/specs/2026-11-24-manual-shizuku-control-design.md`。
-
-构建、JVM 测试不能代替真机验证。尤其需要在实际 Shizuku / MIUI / HyperOS 上确认权限流程、真实 ON/OFF 状态以及开关过程没有普通确认框。
+JVM 测试和 APK 构建不替代真机验证。Shizuku/OEM确认框、无焦点窗口、实际OFF→ON和进程死亡后的恢复，需在实际测试手机上验证；最终交付记录明确哪些执行、哪些未执行。

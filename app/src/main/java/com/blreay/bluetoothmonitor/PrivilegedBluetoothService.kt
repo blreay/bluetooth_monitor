@@ -10,14 +10,14 @@ class PrivilegedBluetoothService : IPrivilegedBluetoothService.Stub() {
 
     override fun setBluetoothEnabled(enabled: Boolean): String {
         if (!running.compareAndSet(false, true)) {
-            return BluetoothCommandResult(BluetoothCommandResult.Status.ERROR, "另一条蓝牙命令仍在执行").encode()
+            return BluetoothCommandResult(BluetoothCommandResult.Status.NOT_INVOKED, "另一条蓝牙命令仍在执行；本条未调用，但旧执行权限未结束，不能重放/反向开关", false).encode()
         }
         return try {
             PrivilegedBluetoothCommand.execute(Process.myUid(), enabled) { arguments ->
                 runner.run(arguments)
             }.encode()
         } catch (t: Throwable) {
-            BluetoothCommandResult(BluetoothCommandResult.Status.ERROR, "执行失败：${t.message ?: t.javaClass.simpleName}").encode()
+            BluetoothCommandResult(BluetoothCommandResult.Status.UNCERTAIN, "执行失败，可能已调用：${t.message ?: t.javaClass.simpleName}", false).encode()
         } finally {
             running.set(false)
         }

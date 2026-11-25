@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">蓝牙重启</string>
+    <string name="app_name">蓝牙手环重启·后台</string>
 
     <!-- ===================== Toasts ===================== -->
 
@@ -31,7 +31,7 @@
     <string name="notif_title_bluetooth_off">蓝牙未开启</string>
     <string name="notif_title_no_adapter">本机没有蓝牙适配器</string>
     <string name="notif_title_permission">缺少「附近的设备」权限</string>
-    <string name="notif_title_disable_refused">系统拒绝关闭蓝牙</string>
+    <string name="notif_title_disable_refused">未能安排安全恢复</string>
     <string name="notif_title_scan_error">扫描出错</string>
     <string name="notif_title_restored">蓝牙已恢复</string>
     <string name="notif_title_gave_up">蓝牙重启失败</string>
@@ -47,43 +47,43 @@
     <!-- ===================== One hint per NotFoundReason ===================== -->
 
     <!-- %1$d is the onScanFailed code -->
-    <string name="notif_hint_scan_failed">系统报告扫描失败，errorCode=%1$d。这是扫描客户端注册失败，不是限流</string>
+    <string name="notif_hint_scan_failed">系统报告扫描失败，errorCode=%1$d。错误码 2 表示扫描客户端注册失败；不能据此断言是扫描次数限流</string>
 
     <!-- %1$d count, %2$s a short sample of what was seen -->
     <string name="notif_hint_near_miss">看到 %1$d 个疑似手环但没匹配上：%2$s。手环可能换了广播名，改 BandMatcher.kt 顶部的常量</string>
 
-    <string name="notif_hint_cut_short">扫描窗口被提前掐断，进程多半被系统杀了。检查 MIUI「省电策略」是否设为无限制</string>
+    <string name="notif_hint_cut_short">本次扫描窗口未完整结束，不能确认目标是否在广播；请检查系统限制与省电设置</string>
 
-    <string name="notif_hint_nothing">一个设备都没扫到。多半是被限流：Android 每 30 秒只放行 5 次扫描，之后静默不给结果且不报错。等 30 秒再点一次</string>
+    <string name="notif_hint_nothing">未收到任何设备广播。可能是次数限流、系统限制或周围没有可见广播，不能仅凭零结果确定原因；等 30 秒后再运行一次</string>
 
-    <string name="notif_hint_no_band">扫描本身是好的，就是没看到目标手环</string>
+    <string name="notif_hint_no_band">收到了其他设备广播，但本次没有收到匹配目标手环的广播</string>
 
     <!-- Appended to notif_hint_no_band. A bonded band that is connected has
          stopped advertising, which is the single most common reason a user
          swears the device is visible while the scan correctly sees nothing. -->
-    <string name="notif_note_bonded">。手环在已配对列表里：它连着手机时会停止广播，此时扫不到属于正常</string>
-    <string name="notif_note_not_bonded">。手环不在本机已配对列表里</string>
+    <string name="notif_note_bonded">。在已读取的配对列表诊断中匹配到目标；配对缓存不是广播命中，也不能证明当前连接或广播状态</string>
+    <string name="notif_note_not_bonded">。本次配对列表诊断未匹配到目标（也可能未能读取）；配对缓存不是当前命中依据</string>
 
     <!-- ===================== Bodies for the non-scan outcomes ===================== -->
 
     <!-- %1$s is the matched name or address -->
-    <string name="notif_body_found">已命中 %1$s。蓝牙关闭中，重开交给每秒一跳的闹钟链</string>
+    <string name="notif_body_found">已命中当前广播 %1$s。安全恢复记录与闹钟已安排，尚未确认蓝牙关闭；先尝试 Shizuku，不可用时自动尝试普通方式</string>
 
     <!-- %1$s is the AdapterState -->
     <string name="notif_body_bluetooth_off">当前蓝牙状态 %1$s，按设计直接退出，没有做任何操作</string>
 
     <string name="notif_body_no_adapter">取不到 BluetoothAdapter，这台设备可能没有蓝牙硬件</string>
 
-    <string name="notif_body_permission">需要「附近的设备」权限才能扫描和开关蓝牙。点一次桌面图标即可授权</string>
+    <string name="notif_body_permission">需要「附近的设备」SCAN/CONNECT 权限才能扫描和开关蓝牙。首次打开会申请；拒绝后不重复弹窗，点击通知详情可显式重试</string>
 
-    <string name="notif_body_disable_refused">找到了手环，但系统拒绝关闭蓝牙，蓝牙仍是开着的。检查 MIUI「开关蓝牙」权限是否已设为允许</string>
+    <string name="notif_body_disable_refused">找到了当前目标广播，但安全持久化或恢复闹钟安排失败，未派发关闭蓝牙；请查看详情与系统状态</string>
 
     <string name="notif_body_scan_error">扫描过程中出错，详情看 adb logcat 的 BtReset.Ctrl</string>
 
     <!-- ===================== Bodies for the slow phase ===================== -->
 
     <!-- %1$d ticks; one tick is one second, so ticks are seconds -->
-    <string name="notif_body_restored">蓝牙已重新开启，共 %1$d 跳（约 %1$d 秒）</string>
+    <string name="notif_body_restored">已观察到蓝牙 ON，共 %1$d 次观察；闹钟可能延迟，次数不等于保证秒数</string>
 
     <string name="notif_body_gave_up_no_adapter">重开途中取不到蓝牙适配器，已放弃</string>
 

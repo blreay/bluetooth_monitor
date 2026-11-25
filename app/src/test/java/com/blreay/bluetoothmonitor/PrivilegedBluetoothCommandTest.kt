@@ -26,7 +26,8 @@ class PrivilegedBluetoothCommandTest {
             BluetoothCommandResult(BluetoothCommandResult.Status.SUBMITTED, "")
         }
         assertFalse(called)
-        assertEquals(BluetoothCommandResult.Status.ERROR, result.status)
+        assertEquals(BluetoothCommandResult.Status.NOT_INVOKED, result.status)
+        assertTrue(result.authorityEnded)
     }
 
     @Test fun `root UID is permitted`() {
@@ -53,7 +54,17 @@ class PrivilegedBluetoothCommandTest {
         assertTrue(decoded.output.startsWith("拒绝\n"))
     }
 
-    @Test fun `malformed result is an error never successful`() {
-        assertEquals(BluetoothCommandResult.Status.ERROR, BluetoothCommandResult.decode("garbage").status)
+    @Test fun `malformed or legacy ambiguous response is uncertain never not invoked`() {
+        assertEquals(BluetoothCommandResult.Status.UNCERTAIN, BluetoothCommandResult.decode("garbage").status)
+        assertFalse(BluetoothCommandResult.decode("ERROR\nunknown failure").authorityEnded)
+    }
+
+    @Test fun `wire distinguishes definite no invocation from unresolved native authority`() {
+        for (result in listOf(
+            BluetoothCommandResult(BluetoothCommandResult.Status.NOT_INVOKED, "terminal", true),
+            BluetoothCommandResult(BluetoothCommandResult.Status.UNCERTAIN, "RPC exception", false),
+            BluetoothCommandResult.fromExit(1, "OEM refused"))) {
+            assertEquals(result, BluetoothCommandResult.decode(result.encode()))
+        }
     }
 }
