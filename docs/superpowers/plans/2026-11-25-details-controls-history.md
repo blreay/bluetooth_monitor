@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-1.1功能源码、规格/质量/整体源码审查、两次完整构建及新APK复制核验已完成，Git提交推送仍待完成。旧1.0输出缓存被AGP清理，公开备份查找未能恢复，原文件保留/本次并排重验门未通过；不宣称全部计划门通过。下面复选框只按实际完成证据更新。
+1.1功能源码、规格/质量/整体源码审查、两次完整构建及新APK交付核验已完成；功能提交已推送并核对远端SHA及干净tree。本记录的最终状态更新随文档提交交付。旧1.0输出缓存被AGP清理，公开备份查找未能恢复，原文件保留/本次并排重验门未通过；不宣称全部计划门通过。下面复选框只按实际完成证据更新。
 
 ## 任务
 
@@ -40,7 +40,7 @@
 - [x] 新`bt-monitor-nogui-1.1.apk`复制后metadata/size/hash核验，并保存构建目录之外的同字节副本。
 - [ ] 原1.0文件保留及本次原文件并排重验：失败，AGP清理输出后公开备份查找未恢复，不能标通过。
 - [x] adb设备可用性与真实执行/未执行的验收项。
-- [ ] attribution提交、仅当前分支push、远端SHA与干净tree确认。
+- [x] attribution功能提交、仅当前分支push、远端SHA与干净tree确认；最终记录更新单独提交。
 
 ## 验证命令
 
@@ -93,4 +93,4 @@ source /home/admin/.cache/btreset-build/env.sh
 
 Task3代理交接并冻结，仅修改build.gradle/AppIdentityBoundaryTest/README：versionName1.1、本地code2/CI+2，原私密路径与退役证书拒绝不变，实际release守卫增加原7825cc证书pin；README新增manual/BLE/累计/删除/100/OEM/旧数据/隔离边界，原1.0交付单独保留，新APK仍待最终核验。父读取实际build脚本与三文件diff，diff-check通过。父检查真实版本/证书断言RED（12项/3失败，`/tmp/btreset-task3-RED-21KuYr.log`），GREEN日志`/tmp/btreset-task3-GREEN-1SeHoH.log`成功；缺配置release在`validateNoguiReleaseSigning`明确失败，日志`/tmp/btreset-task3-MISSING-SIGNING-y3xpBk.log`，不是行为红测或成功构建。代理完整test/debug/lint日志`/tmp/btreset-task3-FULL-gkzbbd.log`实际12秒/73任务全执行，报告295项零失败/错误/跳过。父使用另一个确实不存在的BT_NOGUI_SIGNING_PROPERTIES路径独立完整重跑成功，证明测试/debug不需要release配置：12秒/73任务全执行，`/tmp/btreset-task3-parent-full.log`；实际22suite295项零失败/错误/跳过、Identity12，debug metadata包名不变且1.1/code2，lint保持Warning12/Fatal1（ExpiredTargetSdkVersion）、MissingPermission0/Error0，三个setter弃用warning保留。没有用不同私钥执行wrong-certificate构建；公开pin的拒绝比较由实际source/test核对，最终正确证书仍须真实release/APK验证。Task3只读规格审查返回PASS，无Critical/Important规格缺口；独立quality读取实际三文件与日志后APPROVED，无Critical/Important。最终整体只读审查已启动，覆盖全部tracked/new代码及Android接线；父最终强制test/debug/release/lint成功：13秒/97任务全部执行，日志`/tmp/btreset-1.1-parent-final-full.log`，实际22suite295项零失败/错误/跳过。首次公开APK检查确认1.1/code2、同原7825cc证书、NoDisplay与内部receiver，2542237字节/SHA256 `8844c90ff2d2fe6245600480d24c658ddb554827071babd3a382b1ee53927b52`；这不是最终交付。完整verifier失败：AGP packageRelease清理release输出目录，原`bt-monitor-nogui.apk`不存在，未完成原文件hash对比，串联adb检查也未执行。父没有把失败隐藏或用新编译1.0冒充原文件；已启动只读原APK备份查找，并将新1.1公开产物复制且重验到输出目录外`/tmp/btreset-1.1-public-artifacts-xnb1fy0t/first-verified-1.1.apk`，后续打包前保留外部备份。父第二次完整test/debug/release/lint成功：14秒/97任务全执行，日志`/tmp/btreset-1.1-parent-repeat-full.log`，实际22suite295项零失败/错误/跳过与baseline lint保持。第二份APK仍为1.1/code2、同7825cc证书与compiled NoDisplay/internal receiver，2542237字节/SHA256 `2e429826fd80af4bcecc17fa142ca81eb39c9a57ddefa353f6a0fde19eff7960`；两次证书稳定，但APK字节不同，不声称字节可复现。第二份已复制并重新核验到同外部备份目录的`repeat-verified-1.1.apk`。实际`adb devices -l`为空，覆盖安装/焦点/OEM/四次真重启/划卡/recreation均未执行。最终整体只读源码审查APPROVED：实际20tracked/13new文件、既有权限/SDK/native/retirement边界与新接线均核对，无已验证Critical/Important；这不是原文件保存或真机验收通过。原APK的初始及扩展公开缓存/备份查找均未找到匹配字节，不绕过不可访问目录的权限，未恢复、未重编1.0冒充原文件。默认原文件-preservation verifier的失败保留；另行new-only verifier验证当前新APK与原构建前实测身份记录一致，明确输出`originalPreservationVerified=false`/`allPlannedAcceptanceGatesPassed=false`，不放宽生产/JVM断言。
 
-最终第二份已复制为`app/build/outputs/apk/release/bt-monitor-nogui-1.1.apk`并重新验证包名、1.1/code2、单一7825cc证书、compiled NoDisplay/internalreceiver、manual/history/window类、2542237字节及SHA256 `2e429826fd80af4bcecc17fa142ca81eb39c9a57ddefa353f6a0fde19eff7960`，报告`/tmp/btreset-1.1-delivery-verification.json`。同字节副本保存并重新apksigner/aapt/hash核验到`/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.1.apk`，报告`/tmp/btreset-1.1-durable-apk-backup.json`；后续不得仅依赖会被AGP清理的输出目录。README与新交付数据一致，明确原文件保存失败以及无设备验收，未把这些改写成通过。Git提交/推送尚未执行。
+最终第二份已复制为`app/build/outputs/apk/release/bt-monitor-nogui-1.1.apk`并重新验证包名、1.1/code2、单一7825cc证书、compiled NoDisplay/internalreceiver、manual/history/window类、2542237字节及SHA256 `2e429826fd80af4bcecc17fa142ca81eb39c9a57ddefa353f6a0fde19eff7960`，报告`/tmp/btreset-1.1-delivery-verification.json`。同字节副本保存并重新apksigner/aapt/hash核验到`/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.1.apk`，报告`/tmp/btreset-1.1-durable-apk-backup.json`；后续不得仅依赖会被AGP清理的输出目录。README与新交付数据一致，明确原文件保存失败以及无设备验收，未把这些改写成通过。功能提交`b98725c0f48dbaf9bb1a78ff37cf27af46421393`已完成并推送，仅`bluetooth_monitor_shizuku_nogui`；父实际`git ls-remote`返回相同SHA，`git status --porcelain`为空，提交末尾attribution核对正确。未合并main/旧GUI、未PR/dispatch发布/替换rolling latest，未提交APK或私密签名输入。本段是功能push核验后的最终文档更新，另行docs提交/推送；最终文档SHA以Git HEAD及最终交付答复为准。
