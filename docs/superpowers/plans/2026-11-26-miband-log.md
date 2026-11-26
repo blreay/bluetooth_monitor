@@ -16,7 +16,7 @@
 
 - [x] 只读探索与唯一真实业务选择：用户选择所有文件访问。
 - [x] 设计/执行范围审核通过，核验原1.1并新增构建目录外备份。
-- [ ] Task1：独立日志core、文件writer及Android存储适配。
+- [x] Task1：独立日志core、文件writer及Android存储适配。
 - [ ] Task2：瞬时手动反馈与全部实际启动/扫描/开关日志接线。
 - [ ] Task3：1.2身份、README、任务和整体审查。
 - [ ] Task4：父fresh完整构建、实际APK/原文件保留核验、交付和Git推送。
@@ -52,7 +52,7 @@ fun interface AuditSink {
 
 **Create:** 上述5个日志文件。**Test:** `AuditLogTest.kt`、`RollingLogFileTest.kt`、`BoundedLogWriterTest.kt`；如Android-source契约需要新增`LogStorageBoundaryTest.kt`。本task不改manual/启动/蓝牙状态逻辑或版本。
 
-- [ ] **1. 行为RED：确定格式和边界。** 用真实临时目录、注入时钟和手动调度器写测试。起点可先建立接口最小stub并让断言失败，不用未定义symbol编译失败冒充RED。示例断言目标：
+- [x] **1. 行为RED：确定格式和边界。** 用真实临时目录、注入时钟和手动调度器写测试。起点可先建立接口最小stub并让断言失败，不用未定义symbol编译失败冒充RED。示例断言目标：
 
 ```kotlin
 val max = 3 * 1024 * 1024
@@ -64,7 +64,7 @@ val trim = 1024 * 1024
 
 覆盖毫秒/时区、队列前捕获时间、同PID不同启动事件、换行/引号/控制字符转义、超长字段/记录标注截断、不同进程session、序号顺序、恰好3MiB、1MiB完整行边界、含中文/emoji、大于3MiB的旧文件和超长旧行、有限读取、最新记录保留。
 
-- [ ] **2. 运行RED并保存JUnit证据。**
+- [x] **2. 运行RED并保存JUnit证据。**
 
 ```bash
 source /home/admin/.cache/btreset-build/env.sh
@@ -75,13 +75,13 @@ source /home/admin/.cache/btreset-build/env.sh
 
 Expected：编译成功，实际行为断言失败。独立保存RED XML/日志，后续构建会覆盖默认XML。
 
-- [ ] **3. 实现字节writer。** constants MAX=3,145,728、TRIM=1,048,576；新记录有限完整UTF-8行，超限先裁剪到下一个换行，重复计算旧超大文件的有限尾部，不能readBytes整个异常大输入。正常append在计划上限内；裁剪采用独占创建的同目录temp，有限完整尾部+新记录写入/sync后atomic move替换。异常保留旧文件，不改未知temp或其它路径，不通过sh/su/Shizuku写文件。失败半行不当完整事件；当前writer只清理自己创建的temp。
+- [x] **3. 实现字节writer。** constants MAX=3,145,728、TRIM=1,048,576；新记录有限完整UTF-8行，超限先裁剪到下一个换行，重复计算旧超大文件的有限尾部，不能readBytes整个异常大输入。正常append在计划上限内；裁剪采用独占创建的同目录temp，有限完整尾部+新记录写入/sync后atomic move替换。异常保留旧文件，不改未知temp或其它路径，不通过sh/su/Shizuku写文件。失败半行不当完整事件；当前writer只清理自己创建的temp。
 
-- [ ] **4. 行为RED/GREEN：失败和队列。** 注入append、sync、rename和权限异常；证明旧文件在失败裁剪中不被破坏、root不谎报成功、pending仍保留。手动scheduler阻塞writer后连续enqueue超过容量，确认调度工作数有限、保留新事件、产生带时间范围的丢弃统计、事件捕获不等待I/O。私有暂存同3MiB策略；权限撤销仍暂存、恢复按原事件时间/身份导出；失败后重复导出不伪造新eventId，不影响任何蓝牙状态。
+- [x] **4. 行为RED/GREEN：失败和队列。** 注入append、sync、rename和权限异常；证明旧文件在失败裁剪中不被破坏、root不谎报成功、pending仍保留。手动scheduler阻塞writer后连续enqueue超过容量，确认调度工作数有限、保留新事件、产生带时间范围的丢弃统计、事件捕获不等待I/O。私有暂存同3MiB策略；权限撤销仍暂存、恢复按原事件时间/身份导出；失败后重复导出不伪造新eventId，不影响任何蓝牙状态。
 
-- [ ] **5. Androidadapter。** `initialize(context)`只在主应用guard之后调用，保存app Context/启动固定日志executor，磁盘定位和文件操作延后worker。root通过Android当前主共享存储解析，文件名严格`miband.log`；`Environment.isExternalStorageManager`在实际导出时重新检查，失败catch并披露。内部pending路径在filesDir，不动`bt_reset_pending`preferences。adapter暴露`status()`和`refreshAccess()`，都不在Main检查文件内容。状态通知异常隔离、只按变化更新；新渠道/ID105/direct immutable details PI，不background startActivity。
+- [x] **5. Androidadapter。** `initialize(context)`只在主应用guard之后调用，保存app Context/启动固定日志executor，磁盘定位和文件操作延后worker。root通过Android当前主共享存储解析，文件名严格`miband.log`；`Environment.isExternalStorageManager`在实际导出时重新检查，失败catch并披露。内部pending路径在filesDir，不动`bt_reset_pending`preferences。adapter暴露`status()`和`refreshAccess()`，都不在Main检查文件内容。状态通知异常隔离、只按变化更新；新渠道/ID105/direct immutable details PI，不background startActivity。
 
-- [ ] **6. 聚焦GREEN、完整tests/debug/lint。** 运行下方完整无release命令，核验实际JUnit和lint（新增权限声明在Task2）。独立规格审查通过后质量审查；修复重要问题、同reviewer复审。代理冻结并报告实际公开API、完整文件allowlist、RED/GREEN日志和测试数量。父独立重跑后进入Task2。
+- [x] **6. 聚焦GREEN、完整tests/debug/lint。** 运行下方完整无release命令，核验实际JUnit和lint（新增权限声明在Task2）。独立规格审查通过后质量审查；修复重要问题、同reviewer复审。代理冻结并报告实际公开API、完整文件allowlist、RED/GREEN日志和测试数量。父独立重跑后进入Task2。
 
 ## Task2：瞬时反馈与实际日志入口
 
@@ -91,7 +91,7 @@ Expected：编译成功，实际行为断言失败。独立保存RED XML/日志�
 
 - [ ] **2. controller实际接线。** 在request ingress记录日志（即使拒绝），accepted/reject、dispatch、每次backend/entered/新command/result、sample、scan事件、quarantine和finish边界记录。`at`使用existing worker元数据；fallback commandId使用当前变更后的变量。feedback/sink异常全部隔离，失败不让checked事务被当成功，也不释放native/scanner/lease。ON/OFF消息由coordinator调用`Notifier.always(app, conciseMessage)`；SCAN仍保留结果区，不每个设备弹Toast。
 
-- [ ] **3. UI红绿与所有文件设置。** 删除`manualBodies[ManualAction.ON] = text()`和OFF等价行，仅SCAN进入结果map，保留内部renderer/持久结果。新独立日志状态TextView与授权Button，状态来自immutable `MibandLog.status()`。Button仅点击时启动本包`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`；缺失页面fallback `ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION`，失败Toast。onResume显示实际权限检查结果并触发后台flush，不自动重放蓝牙按钮/启动扫描，不自动打开页面。Manifest只新增MANAGE_EXTERNAL_STORAGE，不加WRITE/legacy/INTERNET/boot。
+- [ ] **3. UI红绿与所有文件设置。** 删除`manualBodies[ManualAction.ON] = text()`和OFF等价行，仅SCAN进入结果map，保留内部renderer/持久结果。新独立日志状态TextView与授权Button，状态来自immutable `MibandLog.status()`。Button仅点击时启动本包`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`；缺失页面fallback `ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION`，失败Toast。onResume显示实际权限检查结果并触发后台flush，不自动重放蓝牙按钮/启动扫描，不自动打开页面。异步flush完成后，即使没有蓝牙callback也须更新可见日志状态：使用单一生命周期受控的cached状态重绘或合并的状态观察回调，stop/destroy取消；不在此更新中调用文件I/O、周期refreshAccess或扫描。Manifest只新增MANAGE_EXTERNAL_STORAGE，不加WRITE/legacy/INTERNET/boot。
 
 - [ ] **4. 主进程与每次真实入口。** `MonitorApplication.onCreate`保持UID0/2000及非主进程guard，日志初始化/`process.start`在coordinator构造之前。`MainActivity.onCreate`记录实际action/component（没有任意extras）和新requestId，保持dispatch+finish/NoDisplay。coordinator每次launch/broadcast/recovery/service入口及拒绝/accept/复用记录；不能只在成功分配run后才打日志，不把MAIN来源伪称fooView。
 
@@ -157,3 +157,25 @@ source /home/admin/.cache/btreset-build/env.sh
 ## 执行证据
 
 本节按实际发生追加RED/GREEN、父核验、审查、artifact和失败数据；未执行项不能标完成。
+
+### Task1初始RED与基线保护
+
+父再次实际aapt/apksigner核验原1.1持久APK及额外备份：同包、1.1/code2、单一原7825cc证书、原2542237字节/hash不变，报告`/tmp/btreset-1.2-original-baseline.json`。初始`adb devices -l`为空，尚不是真机验收。
+
+Task1实现代理仅创建5个新日志生产文件和4个新测试文件。父检查保存的RED日志`/home/admin/.cache/btreset-build/task1-miband-log-20261126/red/gradle.log`及`red/assertions-xml`：生产/测试编译完成后执行62项，56项失败、0错误/跳过，其中54项明确AssertionError，另2项是空stub结果导致的IndexOutOfBoundsException/NullPointerException；不把这两项称为断言失败，也不是compiler/基础设施失败。四suite分别Audit13、Writer11、Storage19、Rolling19。代理报告初始聚焦62项转绿，仍在补充边界并准备完整test/debug/lint；父此时尚未独立执行GREEN、未做规格/质量审查，不将Task1标完成。
+
+### Task1冻结与父首次独立回归
+
+代理DONE/frozen，父检查实际Git scope：仅上述5新生产/4新测试及父计划记录修改，旧runtime/UI/manifest/build/版本/README未改。父核验额外保存的compile-success断言RED：`red-bounds-status`39项/6失败、`red-controls-cleanup`37项/2失败、`red-marker`19项/1失败，失败均为AssertionError，0错误/跳过。代理完整日志`green/full.log`实际30秒/73任务执行，26suite368项零失败/错误/跳过，新增Audit19、Rolling20、Writer11、Storage23；日志此时仍未接入应用入口，未生成新release。
+
+父随后使用确实不存在的`BT_NOGUI_SIGNING_PROPERTIES=/tmp/btreset-1.2-parent-task1-missing-signing-20261126.properties`独立执行完整无release命令成功：50秒、73任务全执行，日志`/tmp/btreset-1.2-task1-parent-full.log`。父读取本次生成的JUnit确认26suite368项零失败/错误/跳过，保留原295项；lint仍为13项（Warning12/Fatal1 ExpiredTargetSdkVersion），MissingPermission0/Error0，三个原通知setter弃用warning保留。生成报告另存`/tmp/btreset-1.2-task1-parent-m5t8236p`，不是只相信代理报告。独立Task1规格审查返回PASS：实际5生产/4测试核对，无已验证Critical/Important；73新测试使用实际core/storage seam，Android权限/路径/通知的source断言不当真机验证。一个非阻塞测试建议（完成行后第二行在多字节字符中断）未对应实现缺陷。随后启动独立质量审查；质量门尚未完成，Task1仍不标完成。
+
+质量审查过程中，审查代理调用的code-review技能意外启动了第二审查代理，违反本任务禁止再委派的约束。审查代理立即发出停止读取指令，TaskStop被所有权限制拒绝；父不代执行已被拒绝的停止操作、不绕过限制。额外代理随后报告已自行停止，仅执行只读Git diff/列表、未读取源码/完成审查/修改文件；此为代理报告，不使用其输出作审查证据。原质量审查继续直接读取源码，不再调用自动委派技能。该流程违规如实保留，不伪称从未发生。
+
+直接质量审查返回NOT APPROVED，1项Important：`AuditSink.event()`在capture的96字节key限制之前，先associate/hash完整新字符串key；多MiB未hash过的key使调用线程（包括NONE）执行输入大小相关工作，违反有限capture。父读取实际`AuditLog.kt:11—16`及相关测试确认，已有超长key测试仅调用capture，不能覆盖convenience入口。已交同Task1实现代理仅修改AuditLog/AuditLogTest，用真实event入口红绿修正、在map插入前先做有限字符长度检查并保留truncation marker和escaped-byte限制，再完整无release回归。原368项回归通过不代表此质量缺陷关闭，Task1仍未完成。两个Minor建议不对应存储正确性缺陷：多字节第二行部分追加测试可补强；ACK_FAILED状态可被后续成功private读/暂存清掉，具体重复回放提示不sticky，通用原eventId可能回放/非exactly-once披露仍有效。此轮不引入非必要状态重构。
+
+### Task1质量修正通过、父再次独立核验
+
+同实现代理仅修改AuditLog/AuditLogTest并冻结：event入口在map插入/hash之前先检查key.length>96，最多访问前32个输入slot；忽略超长key/字段溢出的marker在重复key和32项边界仍明确，capture的escaped-byte规则不变。父实际核验`quality-key-bound/red/gradle.log`与`red/xml`：编译成功、23项/4个AssertionError失败、0错误/跳过；代理聚焦GREEN23项通过，完整日志和XML报告26suite372项零失败/错误/跳过（原295+原Task1全部73+4回归）。
+
+同独立质量审查代理直接重新读取实际两文件返回APPROVED：原Important关闭，无新Critical/Important；未自动委派或执行构建，原Minor仍非阻塞。父随后独立完整test/debug/lint强制重跑成功：50秒、73任务全执行，日志`/tmp/btreset-1.2-task1-parent-key-fix-full.log`，实际26suite372项零失败/错误/跳过（Audit23、Rolling20、Writer11、Storage23），生成报告另存`/tmp/btreset-1.2-task1-parent-key-fix-bkrhm6z9`。lint仍13项Warning12/Fatal1（ExpiredTargetSdkVersion），MissingPermission0/Error0；非lint-clean。父再次实际核验原1.1持久/额外备份未变，报告`/tmp/btreset-1.2-task1-key-fix-baseline.json`，diff-check通过。Task1规格/质量和父独立回归门均通过，已标完成；后续Task2接入生产，当前仍未生成新1.2 release。
