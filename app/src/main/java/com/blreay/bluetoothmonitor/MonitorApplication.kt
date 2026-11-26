@@ -9,11 +9,9 @@ class MonitorApplication : Application() {
         private set
     override fun onCreate() {
         super.onCreate()
-        if (Process.myUid() == 0 || Process.myUid() == 2000 || getProcessName() != packageName) return
+        if (Process.myUid() == 0 || Process.myUid() == 2000 || Process.myUid() != applicationInfo.uid || getProcessName() != packageName) return
         MibandLog.initialize(this)
-        val version = try { packageManager.getPackageInfo(packageName, 0) } catch (_: Exception) { null }
-        MibandLog.event("process.start", "package" to packageName, "uid" to Process.myUid(),
-            "versionName" to version?.versionName, "versionCode" to version?.longVersionCode)
+        MibandLog.event(CompactLogEntry.ProcessStarted)
         coordinator = ResetCoordinator(this)
     }
 }

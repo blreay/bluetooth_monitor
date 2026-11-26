@@ -10,18 +10,6 @@ import java.util.UUID
 
 /** Sole main-looper owner across launcher, service, receivers, details, and exact late RPC callbacks. */
 class ResetCoordinator(private val app: Context, private val audit: AuditSink = MibandLog) {
-    private val runtimeAudit = RuntimeAudit(audit)
-    private val runRequests = linkedMapOf<String, String>()
-    private fun rememberRequest(id: String, requestId: String) {
-        runRequests[id] = requestId
-        while (runRequests.size > 128) runRequests.remove(runRequests.keys.first())
-    }
-    private fun runtimeIdentity(): RuntimeIdentity {
-        val snapshot = store.snapshot()
-        snapshot.manualFence?.let { return RuntimeIdentity("manual", it.operationId, it.commandId) }
-        snapshot.pending?.let { return RuntimeIdentity("automatic", it.runId, it.commandId, runRequests[it.runId]) }
-        return RuntimeIdentity("automatic", activeRun.orEmpty(), "", activeRun?.let { runRequests[it] })
-    }
     private val handler = Handler(Looper.getMainLooper())
     private val store = PendingResetStore.persistence(app)
     private val ownership = RunOwnership()
@@ -32,15 +20,11 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
         onRetired = { ticket -> handler.post {
             manualScanners.retired(ticket) { it.retirementConfirmed(ticket) }
             publishDetails()
-        } },
-        audit = audit, onFailure = { _, reason -> handler.post { notice("扫描清理未确认", reason) } })
+        } }, onFailure = { _, reason -> handler.post { notice("扫描清理未确认", reason) } })
     private val engine = DurableResetEngine(store,
         { ReEnableScheduler.armNextTick(app) }, { System.currentTimeMillis() }, { UUID.randomUUID().toString() }, audit)
     private val subscriptions = VisibleDetailsSubscription { detailsSnapshot() }
-    val client = ShizukuBluetoothClient(app) {
-        audit.event("shizuku.status", "reason" to it)
-        RunNotification.authorization(app, it); publishDetails()
-    }
+    val client = ShizukuBluetoothClient(app) { RunNotification.authorization(app, it); publishDetails() }
     private val backend = object : SwitchBackend {
         override fun readState(lease: CommandLease, callback: (AdapterState) -> Unit) = readStateBounded(lease, callback)
         override fun preflight(lease: CommandLease, budgetMs: Long, callback: (SwitchCapability) -> Unit) = client.preflight(lease, budgetMs, callback)
@@ -71,7 +55,6 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
                 }) { result, _ -> callback(result) }
         }
     }
-    private fun observedDriver(identity: () -> RuntimeIdentity) = BluetoothSwitchDriver(runtimeAudit.backend(backend, identity))
     private var scan: BandResetController? = null
     private var scanRun: String? = null
     private var serviceTicket: ForegroundAdmission.Ticket? = null
@@ -105,19 +88,14 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
         override fun execute(operation: ManualOperation, lease: CommandLease, ordinaryOnly: Boolean,
                              event: (BackendEntry) -> Unit, entered: (Long) -> Unit,
                              nextAttempt: (SwitchOutcome) -> Boolean, result: (SwitchOutcome) -> Unit) {
-            var commandId = operation.commandId
-            val driver = observedDriver { RuntimeIdentity("manual", operation.operationId, commandId) }
+            val driver = BluetoothSwitchDriver(backend)
             driver.execute(operation.action == ManualAction.ON, lease, ordinaryOnly = ordinaryOnly, onEvent = event,
                 invocation = SwitchInvocation(entered, { previous ->
                     val s = store.snapshot()
                     if (!lease.valid() || s.storageFailed || s.integrityBlocked || s.pending != null ||
                         s.manualFence?.operationId != operation.operationId || serviceTicket?.owner != ForegroundAdmission.Owner.MANUAL ||
                         serviceRun != operation.operationId || serviceTicket?.runId != operation.operationId)
-                        false else {
-                            val allowed = previous == null || nextAttempt(previous)
-                            if (allowed) commandId = store.snapshot().manualFence?.takeIf { it.operationId == operation.operationId }?.commandId ?: commandId
-                            allowed
-                        }
+                        false else previous == null || nextAttempt(previous)
                 }), callback = result)
         }
         override fun sample(lease: CommandLease, result: (StateSample) -> Unit) = readSampleBounded(lease, result)
@@ -126,7 +104,7 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             if (s.storageFailed || s.integrityBlocked || s.pending != null || s.manualFence?.operationId != operation.operationId) {
                 events.finished("安全存储/手动身份不可确认；未开始扫描", true); return
             }
-            val scanner = ManualBleScanner(app, operation, lease, retirement, events, audit)
+            val scanner = ManualBleScanner(app, operation, lease, retirement, events)
             manualScanners.install(operation.operationId, scanner)
             scanner.start()
         }
@@ -136,12 +114,7 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             if (serviceTicket?.owner == ForegroundAdmission.Owner.MANUAL && serviceRun == operationId) finishService()
         }
     }, { System.currentTimeMillis() }, { SystemClock.elapsedRealtime() }, { UUID.randomUUID().toString() }, { publishDetails() },
-        feedback = { value ->
-            // SCAN results remain in their one result card. Never toast advertisements or replay snapshots.
-            if (value.action != ManualAction.SCAN || value.type in setOf(ManualFeedbackType.REJECTED, ManualFeedbackType.STORAGE_FAILED) ||
-                value.status == ManualResultStatus.FAILED || value.status == ManualResultStatus.UNCERTAIN)
-                Notifier.always(app, value.conciseMessage())
-        }, audit = audit)
+        feedback = { value -> Notifier.always(app, value.conciseMessage()) }, audit = audit)
     init { client.start() }
 
     fun detailsSnapshot() = DetailsSnapshot(store.snapshot(), RunNotification.details(app), client.status,
@@ -159,46 +132,29 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
         publishDetails()
     }
     private fun notice(title: String, text: String) {
-        audit.event("runtime.notice", "title" to title, "reason" to text)
         latestNotice = "$title：$text"; RunNotification.notice(app, title, text); publishDetails()
     }
     private fun report(record: ResetRecord, state: AdapterState, message: String, final: Boolean = false) {
-        audit.event("automatic.report", "runId" to record.runId, "commandId" to record.commandId, "version" to record.version,
-            "state" to state, "authorityEnded" to record.authorityEnded, "reason" to message, "finalPresentation" to final)
         RunNotification.runtime(app, record, state, message, final); publishDetails()
     }
 
     /** NoDisplay dispatcher: setup/FGS opportunity is synchronous, never delayed until a human response. */
-    fun launch(activity: Activity, verbose: Boolean, requestId: String = UUID.randomUUID().toString()) {
+    fun launch(activity: Activity, verbose: Boolean) {
         requireMain()
-        val source = when (activity.intent.action) {
-            Intent.ACTION_MAIN -> "launcher"
-            "${app.packageName}.action.RUN" -> "RUN"
-            else -> "activity" // no reliable caller identification for arbitrary explicit intents
-        }
-        runtimeAudit.ingress(source, requestId, activity.intent.action, activity.intent.component?.flattenToShortString())
         val s = store.snapshot()
         if (!gate.newRequest() && !(s.pending != null && activeRun == null && serviceDone == null &&
                     !admission.busy() && gate.recovery(s.pending.runId))) {
             if (retirement.blocked()) retirement.retryRetirement()
-            audit.event("runtime.launch.refused", "requestId" to requestId, "reason" to "operation gate/retirement/storage occupied",
-                "pendingRunId" to s.pending?.runId, "manualOperationId" to s.manualFence?.operationId)
             notice("新运行未执行", "已有运行/待恢复/手动或扫描清理隔离，或存储不可确认；立即拒绝，不排队/替换")
             return
         }
         val id = s.pending?.runId ?: UUID.randomUUID().toString()
-        if (!ownership.acquire(id)) {
-            audit.event("runtime.launch.refused", "requestId" to requestId, "runId" to id, "reason" to "run owner occupied")
-            return
-        }
-        rememberRequest(id, requestId)
-        audit.event("runtime.launch.accepted", "requestId" to requestId, "runId" to id, "recoveryReuse" to (s.pending != null))
+        if (!ownership.acquire(id)) return
         activeRun = id; wantsToast = verbose; startupSettled = false
         val needsNearby = !BtPermissions.allGranted(app)
         val setupNecessary = !setupPrefs.getBoolean("notification_setup_seen", false) ||
             (needsNearby && !setupPrefs.getBoolean("nearby_attempted", false))
         waitingForSetup = setupNecessary
-        audit.event("runtime.startup.route", "requestId" to requestId, "runId" to id, "setupNecessary" to setupNecessary, "needsNearby" to needsNearby)
         StartupLaunchSequence.dispatch<SwitchCapability>(
             startup = { ready -> client.startup(callback = ready) },
             decide = {
@@ -209,7 +165,6 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
                     releaseRun(id)
                 } else if (!tryForeground(id) && startupSettled) continueStartup(id)
             }, ready = delivered@{ capability ->
-                audit.event("shizuku.startup.result", "requestId" to requestId, "runId" to id, "mode" to capability.mode, "reason" to capability.reason)
                 if (!ownership.current(id) || !gate.automaticContinuation(id, activeRun, true)) return@delivered
                 startupSettled = true
                 RunNotification.authorization(app, capability.reason); publishDetails()
@@ -225,7 +180,6 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
     fun detachSetupCallback() { requireMain(); setupWait = null }
     fun setupCompleted(runId: String, granted: Boolean) {
         requireMain()
-        audit.event("runtime.setup.completed", "runId" to runId, "granted" to granted, "ownerCurrent" to ownership.current(runId))
         if (!ownership.current(runId)) return
         if (!gate.automaticContinuation(runId, activeRun, true)) { releaseRun(runId); return }
         waitingForSetup = false; setupWait = null
@@ -235,13 +189,8 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
         } else if (!tryForeground(runId)) continueStartup(runId)
     }
     private fun continueStartup(id: String) {
-        audit.event("runtime.startup.continuation", "runId" to id, "requestId" to runRequests[id], "startupSettled" to startupSettled,
-            "waitingForSetup" to waitingForSetup, "servicePending" to admission.waiting(id))
         if (!ownership.current(id) || !gate.automaticContinuation(id, activeRun) || !startupSettled || waitingForSetup ||
-            scan != null || admission.waiting(id)) {
-            audit.event("runtime.startup.continuation.refused", "runId" to id, "reason" to "owner/gate/startup/setup/scan/admission not ready")
-            return
-        }
+            scan != null || admission.waiting(id)) return
         if (engine.read() != null) {
             notice("继续上次恢复", "存在持久化待恢复记录；不会开始新扫描/OFF")
             if (serviceDone != null) recoveryStep(serviceLease ?: CommandLease.foreground(), false) { scheduleServiceTick() }
@@ -257,38 +206,26 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
         }
     }
     /** Broadcasts never launch Activities or wait for permission. */
-    fun broadcastScan(verbose: Boolean, lease: CommandLease, requestId: String = UUID.randomUUID().toString(), done: () -> Unit) {
+    fun broadcastScan(verbose: Boolean, lease: CommandLease, done: () -> Unit) {
         requireMain()
-        runtimeAudit.ingress("broadcast", requestId, TriggerReceiver.action(app), TriggerReceiver::class.java.name)
         if (!BtPermissions.allGranted(app)) {
-            audit.event("runtime.broadcast.refused", "requestId" to requestId, "reason" to "nearby permission missing")
             notice("缺少附近设备权限", "广播未扫描/未开关。请点击通知详情或首次打开图标完成必要权限设置")
             done(); return
         }
         if (!gate.newRequest() || commandBusy != null) {
             if (retirement.blocked()) retirement.retryRetirement()
-            audit.event("runtime.broadcast.refused", "requestId" to requestId, "reason" to "operation gate/command occupied")
             notice("广播新运行未执行", "已有运行/恢复/手动/扫描清理或存储隔离；不排队/替换")
             done(); return
         }
         val id = UUID.randomUUID().toString()
-        if (!ownership.acquire(id)) {
-            audit.event("runtime.broadcast.refused", "requestId" to requestId, "runId" to id, "reason" to "run owner occupied")
-            done(); return
-        }
-        rememberRequest(id, requestId)
-        audit.event("runtime.broadcast.accepted", "requestId" to requestId, "runId" to id)
+        if (!ownership.acquire(id)) { done(); return }
         activeRun = id; wantsToast = verbose; startupSettled = true
         if (tryForeground(id)) { done(); return }
         startScan(id, TriggerReceiver.RECEIVER_SCAN_TIMEOUT_MS, lease, done)
     }
     private fun startScan(id: String, window: Long, lease: CommandLease, done: () -> Unit) {
-        audit.event("automatic.scan.request", "runId" to id, "requestId" to runRequests[id], "windowMs" to window)
         if (!ownership.current(id) || !gate.automaticContinuation(id, activeRun) || scan != null ||
-            store.snapshot().pending != null || !lease.valid()) {
-            audit.event("automatic.scan.refused", "runId" to id, "reason" to "owner/gate/pending/lease invalid")
-            done(); return
-        }
+            store.snapshot().pending != null || !lease.valid()) { done(); return }
         if (retirement.blocked()) {
             retirement.retryRetirement()
             notice("旧扫描清理尚未确认", "本次未扫描/开关；只重试原注册失败清理，不覆盖安全隔离")
@@ -300,8 +237,6 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             else {
                 match.scanStartedElapsed?.let { runStartElapsed[id] = it }
                 val armed = engine.armAccepted(match, wantsToast)
-                audit.event("automatic.arm.result", "runId" to id, "armed" to (armed != null),
-                    "commandId" to armed?.commandId, "reason" to store.snapshot().disclosure, at = match.acceptedAt)
                 RunNotification.history(app, id); publishDetails()
                 if (armed == null) {
                     notice("无法安排安全恢复", "持久化/恢复闹钟安排失败；未关闭蓝牙。失败尝试未计数；${store.snapshot().disclosure.orEmpty()}")
@@ -345,12 +280,7 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
     }
     fun serviceStarted(ticket: ForegroundAdmission.Ticket, startId: Int, done: () -> Unit) {
         requireMain()
-        audit.event("foreground.service.ingress", "runId" to ticket.runId, "admissionId" to ticket.token, "owner" to ticket.owner, "startId" to startId)
-        if (!serviceAdmissionCurrent(ticket) || !admission.accept(ticket)) {
-            audit.event("foreground.service.refused", "runId" to ticket.runId, "admissionId" to ticket.token, "startId" to startId, "reason" to "exact admission not current")
-            done(); return
-        }
-        audit.event("foreground.service.accepted", "runId" to ticket.runId, "admissionId" to ticket.token, "owner" to ticket.owner, "startId" to startId)
+        if (!serviceAdmissionCurrent(ticket) || !admission.accept(ticket)) { done(); return }
         serviceTicket = ticket; serviceStartId = startId; serviceRun = ticket.runId; serviceDone = done
         serviceLease = if (ticket.owner == ForegroundAdmission.Owner.MANUAL)
             CommandLease({ SystemClock.elapsedRealtime() }, SystemClock.elapsedRealtime() + ManualOperationController.WORK_WINDOW_MS)
@@ -371,18 +301,11 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
         else if (activeRun == ticket.runId) releaseRun(ticket.runId)
         publishDetails() // Service destruction never clears entered native authority.
     }
-    fun alarm(lease: CommandLease, requestId: String = UUID.randomUUID().toString(), done: () -> Unit) {
+    fun alarm(lease: CommandLease, done: () -> Unit) {
         requireMain()
-        runtimeAudit.ingress("alarm", requestId, ReEnableScheduler.action(app), ReEnableReceiver::class.java.name)
-        val pending = engine.read() ?: run {
-            audit.event("recovery.alarm.refused", "requestId" to requestId, "reason" to "no pending record")
-            done(); return
-        }
-        audit.event("recovery.alarm.pending", "requestId" to requestId, "runId" to pending.runId,
-            "commandId" to pending.commandId, "stage" to pending.stage, "authorityEnded" to pending.authorityEnded)
+        val pending = engine.read() ?: run { done(); return }
         if (!gate.recovery(pending.runId)) {
             if (!store.snapshot().storageFailed && !store.snapshot().integrityBlocked) ReEnableScheduler.armNextTick(app)
-            audit.event("recovery.alarm.refused", "requestId" to requestId, "runId" to pending.runId, "reason" to "recovery gate occupied")
             notice("恢复暂未派发", "手动/扫描清理/设置或存储隔离仍占用；保留原待恢复，不借用手动身份")
             done(); return
         }
@@ -397,8 +320,6 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
     }
     private fun recoveryStep(lease: CommandLease, constrained: Boolean, done: () -> Unit) {
         val pending = engine.read() ?: run { finishService(); done(); return }
-        audit.event("recovery.step.request", "runId" to pending.runId, "commandId" to pending.commandId,
-            "stage" to pending.stage, "constrained" to constrained, "authorityEnded" to pending.authorityEnded)
         if (!gate.recovery(pending.runId)) {
             if (!store.snapshot().storageFailed && !store.snapshot().integrityBlocked) ReEnableScheduler.armNextTick(app)
             if (store.snapshot().storageFailed || store.snapshot().integrityBlocked) finishService()
@@ -419,9 +340,6 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             val duration = runStartElapsed[before.runId]?.let { start -> sample.sampledElapsed?.let { (it - start).takeIf { ms -> ms >= 0L } } }
             val step = engine.observe(state, sample.sampledAt, duration)
             val current = engine.read()
-            runtimeAudit.event("recovery.decision", RuntimeIdentity("automatic", before.runId, before.commandId, runRequests[before.runId]),
-                "step" to step, "state" to state, "authorityEnded" to before.authorityEnded, "nextCommandId" to current?.commandId,
-                "reason" to current?.reason, "sampledElapsedMs" to sample.sampledElapsed, at = sample.sampledAt)
             publishDetails()
             when (step) {
                 RecoveryStep.DISPATCH_OFF, RecoveryStep.DISPATCH_ON -> {
@@ -429,36 +347,24 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
                     val enabled = step == RecoveryStep.DISPATCH_ON
                     var command = engine.dispatch(current, lease, enabled) ?: run { finish(); return@sampled }
                     commandBusy = command.commandId
-                    val commandRequestId = runRequests[command.runId]
-                    val driver = observedDriver { RuntimeIdentity("automatic", command.runId, command.commandId, commandRequestId) }
-                    runtimeAudit.event("automatic.switch.request", RuntimeIdentity("automatic", command.runId, command.commandId, runRequests[command.runId]),
-                        "enabled" to enabled, "ordinaryOnly" to command.ordinaryOnly, "version" to command.version, at = command.dispatchedAt)
+                    val driver = BluetoothSwitchDriver(backend)
                     driver.execute(enabled, lease, if (constrained) 1_200L else 5_000L,
                         if (constrained) 5_500L else 6_000L, command.ordinaryOnly,
                         onEvent = { entry ->
-                            runtimeAudit.event("automatic.backend.route", RuntimeIdentity("automatic", command.runId, command.commandId, commandRequestId),
-                                "mode" to entry.mode, "reason" to entry.reason)
                             if (engine.note(command, entry)) engine.read()?.let { report(it, state, entry.reason) }
                         },
                         invocation = SwitchInvocation(entered = { at ->
-                            runtimeAudit.event("automatic.native.entered", RuntimeIdentity("automatic", command.runId, command.commandId, commandRequestId),
-                                "boundary" to "client RPC/API entry, not service spawn or hardware instant", at = at)
                             if (engine.nativeEntered(command, at)) { RunNotification.history(app, command.runId); publishDetails() }
                         }, beforeAttempt = attempt@{ previous ->
                             if (!lease.valid() || !gate.recovery(command.runId)) return@attempt false
                             if (previous != null) {
                                 val next = engine.nextPhysicalAttempt(command, previous) ?: return@attempt false
-                                runtimeAudit.event("automatic.command.next", RuntimeIdentity("automatic", next.runId, next.commandId, commandRequestId),
-                                    "previousCommandId" to command.commandId, "reason" to next.reason, at = next.dispatchedAt)
                                 command = next; commandBusy = next.commandId
                             }
                             store.snapshot().pending?.commandId == command.commandId
                         })) { outcome ->
                         if (commandBusy == command.commandId) commandBusy = null
-                        runtimeAudit.outcome("automatic.outcome", RuntimeIdentity("automatic", command.runId, command.commandId, commandRequestId), outcome)
                         val continuation = engine.completeAndRearm(command, outcome)
-                        runtimeAudit.event("automatic.completion.save", RuntimeIdentity("automatic", command.runId, command.commandId, commandRequestId),
-                            "saved" to (continuation != null), "rearmed" to continuation?.rearmed, "reason" to continuation?.failure)
                         if (continuation != null) {
                             val followup = continuation.failure ?: if (continuation.rearmed == true)
                                 "已重新安排后续恢复闹钟；只在新的执行窗口继续" else "执行结束仍未确认；保留安全记录"
@@ -485,16 +391,12 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
         }
     }
     private fun readSampleBounded(lease: CommandLease, callback: (StateSample) -> Unit) {
-        val captured = runtimeIdentity() // request-boundary owner, never queried after asynchronous delivery
         val completion = CompletionGate()
         BoundedBluetoothWork.submit(BoundedBluetoothWork.Lane.ADAPTER, lease, 600L,
             { StateSample(AdapterState.UNKNOWN) }, { StateSample(AdapterState.UNKNOWN) }, {
                 val state = BluetoothSwitch.state(app)
                 StateSample(state, System.currentTimeMillis(), SystemClock.elapsedRealtime())
-            }) { sample, _ ->
-                runtimeAudit.sample(captured, sample)
-                if (completion.finish()) callback(sample)
-            }
+            }) { sample, _ -> if (completion.finish()) callback(sample) }
     }
     private fun readStateBounded(lease: CommandLease, callback: (AdapterState) -> Unit) = readSampleBounded(lease) { callback(it.state) }
     private fun scheduleServiceTick() {
@@ -504,17 +406,10 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
     }
     fun retryAuthorization(callback: () -> Unit = {}) {
         requireMain()
-        val requestId = UUID.randomUUID().toString()
-        audit.event("shizuku.retry.request", "requestId" to requestId)
-        client.startup(explicit = true) {
-            audit.event("shizuku.retry.result", "requestId" to requestId, "mode" to it.mode, "reason" to it.reason)
-            publishDetails(); callback()
-        }
+        client.startup(explicit = true) { publishDetails(); callback() }
     }
     fun retryRecovery(callback: () -> Unit = {}) {
         requireMain()
-        val requestId = UUID.randomUUID().toString()
-        audit.event("recovery.retry.request", "requestId" to requestId)
         val pending = store.snapshot().pending
         if (pending == null || !gate.recovery(pending.runId)) {
             notice("不能继续恢复", "无安全待恢复，或手动/扫描/设置/存储隔离仍占用；不覆盖隔离")
@@ -536,31 +431,15 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             val continuation = engine.rearmContinuation(current)
             report(continuation?.record ?: current, state, continuation?.failure ?: if (continuation?.rearmed == true)
                 "已安排显式 ON 恢复；不会重新扫描/重放 OFF；由安全闹钟/既有服务续接" else "待恢复记录不可安全续接；未派发命令", true)
-            // No delayed foreground start based on an Activity that may already have closed.
-            callback()
+            callback() // no delayed foreground start based on an Activity that may have closed
         }
     }
     private fun tryForeground(id: String, owner: ForegroundAdmission.Owner = ForegroundAdmission.Owner.AUTOMATIC): Boolean {
-        audit.event("foreground.request", "runId" to id, "owner" to owner)
-        if (serviceDone != null) return (serviceRun == id && serviceTicket?.owner == owner).also {
-            audit.event("foreground.reuse", "runId" to id, "owner" to owner, "accepted" to it, "reason" to "existing service owner")
-        }
-        if (admission.waiting(id)) return (admission.pendingTicket(id)?.owner == owner).also {
-            audit.event("foreground.reuse", "runId" to id, "owner" to owner, "accepted" to it, "reason" to "existing exact pending admission")
-        }
-        if (SystemClock.elapsedRealtime() < foregroundUnavailableUntil) {
-            audit.event("foreground.refused", "runId" to id, "owner" to owner, "reason" to "admission cooldown")
-            return false
-        }
-        val ticket = admission.begin(id, owner) ?: run {
-            audit.event("foreground.refused", "runId" to id, "owner" to owner, "reason" to "admission slot occupied")
-            return false
-        }
-        if (!ResetService.tryStart(app, ticket)) {
-            audit.event("foreground.refused", "runId" to id, "admissionId" to ticket.token, "owner" to owner, "reason" to "legal FGS start refused")
-            admission.reject(ticket); return false
-        }
-        audit.event("foreground.pending", "runId" to id, "admissionId" to ticket.token, "owner" to owner, "timeoutMs" to 4_000L)
+        if (serviceDone != null) return serviceRun == id && serviceTicket?.owner == owner
+        if (admission.waiting(id)) return admission.pendingTicket(id)?.owner == owner
+        if (SystemClock.elapsedRealtime() < foregroundUnavailableUntil) return false
+        val ticket = admission.begin(id, owner) ?: return false
+        if (!ResetService.tryStart(app, ticket)) { admission.reject(ticket); return false }
         handler.postDelayed({ if (admission.expire(ticket)) admissionFailed(ticket, "服务提升回调未在4秒内到达；晚到服务不会接管新运行") }, 4_000L)
         return true
     }
@@ -569,7 +448,6 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
         if (admission.reject(ticket)) admissionFailed(ticket, reason)
     }
     private fun admissionFailed(ticket: ForegroundAdmission.Ticket, reason: String) {
-        audit.event("foreground.failed", "runId" to ticket.runId, "admissionId" to ticket.token, "owner" to ticket.owner, "reason" to reason)
         foregroundUnavailableUntil = SystemClock.elapsedRealtime() + 30_000L
         if (ticket.owner == ForegroundAdmission.Owner.MANUAL) { manual.admissionFailed(ticket.runId, reason); return }
         val pending = engine.read()

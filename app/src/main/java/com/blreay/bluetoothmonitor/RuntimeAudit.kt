@@ -1,73 +1,26 @@
 package com.blreay.bluetoothmonitor
 
-/** Immutable owner facts, copied at each physical request boundary, not looked up by late callbacks. */
-data class RuntimeIdentity(val owner: String, val runId: String, val commandId: String, val requestId: String? = null)
-
-/** Diagnostic backend decorator; preserves all six ports and the original invocation, not history policy. */
+/** One current-command annotation, never an authority proof or a second recovery policy. */
 class RuntimeAudit(private val sink: AuditSink) {
-    fun ingress(source: String, requestId: String, action: String?, component: String?) {
-        sink.event("runtime.ingress", "source" to source, "requestId" to requestId, "action" to action, "component" to component)
+    private data class Current(val ownerId: String, val commandId: String, val enabled: Boolean,
+                               var mode: SwitchMode? = SwitchMode.NONE, var uncertain: Boolean = false, var final: Boolean = false)
+    private var current: Current? = null
+    fun begin(ownerId: String, commandId: String, enabled: Boolean) {
+        if (!matches(ownerId, commandId)) current = Current(ownerId, commandId, enabled)
     }
-    fun event(name: String, identity: RuntimeIdentity, vararg fields: Pair<String, Any?>, at: Long? = null) {
-        sink.event(name, "owner" to identity.owner, "runId" to identity.runId, "commandId" to identity.commandId,
-            "requestId" to identity.requestId, *fields, at = at)
+    fun matches(ownerId: String, commandId: String) = current?.let { it.ownerId == ownerId && it.commandId == commandId } == true
+    fun entered(ownerId: String, commandId: String) {
+        if (matches(ownerId, commandId) && current?.mode == SwitchMode.NONE) current?.mode = null
     }
-    fun advertisement(identity: RuntimeIdentity, scannerIdentity: String?, address: String?, name: String?, rssi: Int?,
-                      sampledElapsedNanos: Long, receivedAt: Long, receivedElapsedNanos: Long, deliveredElapsedNanos: Long,
-                      displayOnly: Boolean) {
-        event("ble.advertisement", identity, "scannerIdentity" to scannerIdentity, "address" to address, "name" to name,
-            "rssi" to rssi, "sampledElapsedNanos" to sampledElapsedNanos, "receivedAt" to receivedAt,
-            "receivedElapsedNanos" to receivedElapsedNanos, "deliveredElapsedNanos" to deliveredElapsedNanos,
-            "target" to BandMatcher.isTarget(address, name), "displayOnly" to displayOnly, at = receivedAt)
+    fun outcome(ownerId: String, commandId: String, value: SwitchOutcome) {
+        if (matches(ownerId, commandId)) current?.mode = value.mode
     }
-    fun sample(identity: RuntimeIdentity, sample: StateSample) {
-        event("switch.sample", identity, "state" to sample.state, "sampledElapsedMs" to sample.sampledElapsed,
-            "boundary" to "worker state read, not hardware instant", at = sample.sampledAt)
-    }
-    fun outcome(name: String, identity: RuntimeIdentity, outcome: SwitchOutcome) {
-        event(name, identity, "status" to outcome.status.name, "mode" to outcome.mode, "reason" to outcome.reason,
-            "authorityEnded" to outcome.authorityEnded, "enteredAt" to outcome.enteredAt,
-            "submittedAt" to outcome.submittedAt, "returnedAt" to outcome.returnedAt, at = outcome.returnedAt)
-    }
-    fun backend(delegate: SwitchBackend, identity: () -> RuntimeIdentity): SwitchBackend = object : SwitchBackend {
-        override fun readState(lease: CommandLease, callback: (AdapterState) -> Unit) {
-            val captured = identity()
-            event("switch.state.request", captured)
-            delegate.readState(lease) { state ->
-                event("switch.state", captured, "state" to state, "boundary" to "callback receipt; source sample separately recorded")
-                callback(state)
-            }
-        }
-        override fun preflight(lease: CommandLease, budgetMs: Long, callback: (SwitchCapability) -> Unit) {
-            val captured = identity()
-            event("switch.preflight.request", captured, "budgetMs" to budgetMs)
-            delegate.preflight(lease, budgetMs) { capability ->
-                event("switch.preflight", captured, "mode" to capability.mode, "reason" to capability.reason)
-                callback(capability) // never feed diagnostics to the driver's stateful BackendEntry callback
-            }
-        }
-        override fun privileged(enabled: Boolean, lease: CommandLease, budgetMs: Long, callback: (SwitchOutcome) -> Unit) {
-            val captured = identity()
-            event("switch.privileged.request", captured, "enabled" to enabled, "budgetMs" to budgetMs)
-            delegate.privileged(enabled, lease, budgetMs) { result -> outcome("switch.privileged.outcome", captured, result); callback(result) }
-        }
-        override fun ordinary(enabled: Boolean, lease: CommandLease, callback: (SwitchOutcome) -> Unit) {
-            val captured = identity()
-            event("switch.ordinary.request", captured, "enabled" to enabled)
-            delegate.ordinary(enabled, lease) { result -> outcome("switch.ordinary.outcome", captured, result); callback(result) }
-        }
-        override fun privilegedObserved(enabled: Boolean, lease: CommandLease, budgetMs: Long, invocation: SwitchInvocation,
-                                        callback: (SwitchOutcome) -> Unit) {
-            val captured = identity() // beforeAttempt already rotated the physical command, if needed
-            event("switch.privileged.request", captured, "enabled" to enabled, "budgetMs" to budgetMs)
-            delegate.privilegedObserved(enabled, lease, budgetMs, invocation) { result ->
-                outcome("switch.privileged.outcome", captured, result); callback(result)
-            }
-        }
-        override fun ordinaryObserved(enabled: Boolean, lease: CommandLease, invocation: SwitchInvocation, callback: (SwitchOutcome) -> Unit) {
-            val captured = identity()
-            event("switch.ordinary.request", captured, "enabled" to enabled)
-            delegate.ordinaryObserved(enabled, lease, invocation) { result -> outcome("switch.ordinary.outcome", captured, result); callback(result) }
-        }
+    fun end(ownerId: String, commandId: String, result: String, reliable: Boolean) {
+        if (!matches(ownerId, commandId)) return // cold replay and stale callbacks have no observation ownership
+        val value = current ?: return
+        if (value.final || (!reliable && value.uncertain)) return
+        if (reliable) value.final = true else value.uncertain = true
+        val phrase = if (result == "成功" && value.mode == SwitchMode.NONE) "已是目标状态，未调用" else result
+        sink.event(CompactLogEntry.BluetoothEnded(value.enabled, value.mode, phrase))
     }
 }

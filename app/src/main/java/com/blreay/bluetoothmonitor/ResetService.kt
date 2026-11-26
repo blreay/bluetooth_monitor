@@ -13,9 +13,6 @@ class ResetService : Service() {
     private var latestAndroidStartId = 0
     override fun onBind(intent: Intent?): IBinder? = null
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val requestId = java.util.UUID.randomUUID().toString()
-        MibandLog.event("service.ingress", "requestId" to requestId, "action" to intent?.action,
-            "component" to intent?.component?.flattenToShortString(), "startId" to startId)
         latestAndroidStartId = startId // only used to stop this Android service after its actual owner finishes
         val id = intent?.getStringExtra(EXTRA_RUN)
         val token = intent?.getStringExtra(EXTRA_ADMISSION)
@@ -23,28 +20,23 @@ class ResetService : Service() {
         val ticket = if (id != null && !token.isNullOrEmpty() && owner != null) ForegroundAdmission.Ticket(id, token, owner) else null
         val coordinator = ResetCoordinator.get(this)
         if (lifetime.owned != null) {
-            MibandLog.event("service.refused", "requestId" to requestId, "startId" to startId, "reason" to "duplicate/stale; exact owner retained")
             return START_NOT_STICKY // duplicate/stale start cannot replace exact owner/startId
         }
         if (ticket == null || !coordinator.serviceAdmissionCurrent(ticket)) {
-            MibandLog.event("service.refused", "requestId" to requestId, "startId" to startId, "runId" to id, "reason" to "malformed/cold/stale exact admission")
             stopSelfResult(startId); return START_NOT_STICKY
         }
         if (!BtPermissions.allGranted(this)) {
-            MibandLog.event("service.refused", "requestId" to requestId, "runId" to id, "startId" to startId, "reason" to "nearby permissions missing")
             coordinator.serviceAdmissionFailed(ticket, "附近设备 SCAN/CONNECT 权限未满足")
             stopSelfResult(startId); return START_NOT_STICKY
         }
         try {
             startForeground(RunNotification.ONGOING_ID, RunNotification.ongoing(this, ticket.owner), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } catch (e: Exception) {
-            MibandLog.event("service.promotion.failed", "requestId" to requestId, "runId" to id, "startId" to startId, "failureType" to e.javaClass.simpleName)
             Log.e("BtReset.Svc", "foreground admission failed", e)
             coordinator.serviceAdmissionFailed(ticket, e.javaClass.simpleName)
             stopSelfResult(startId); return START_NOT_STICKY
         }
         if (!lifetime.adopt(ticket, startId)) { stopForeground(STOP_FOREGROUND_REMOVE); stopSelfResult(startId); return START_NOT_STICKY }
-        MibandLog.event("service.promoted", "requestId" to requestId, "runId" to id, "admissionId" to ticket.token, "owner" to owner, "startId" to startId)
         coordinator.serviceStarted(ticket, startId) {
             if (lifetime.finish(ticket, startId)) {
                 stopForeground(STOP_FOREGROUND_REMOVE)

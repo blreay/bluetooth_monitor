@@ -53,7 +53,7 @@ class LogStatusNotification(context: Context) {
                 PrivateLogState.PENDING -> "有界私有记录待导出；授权恢复后由日志线程重放原始事件"
                 PrivateLogState.READ_FAILED -> "私有日志读取失败（${status.privateFailureType ?: "未知类型"}）；旧记录导出未确认"
                 PrivateLogState.WRITE_FAILED -> "私有日志写入/同步失败（${status.privateFailureType ?: "未知类型"}）；记录可能丢失或未确认"
-                PrivateLogState.ACK_FAILED -> "共享导出成功但私有确认失败（${status.privateFailureType ?: "未知类型"}）；以后可能重复相同事件 ID"
+                PrivateLogState.ACK_FAILED -> "共享导出成功但私有确认失败（${status.privateFailureType ?: "未知类型"}）；以后可能重复原始记录"
             })
             append("\n日志为观测输出，不改变蓝牙或恢复安全状态；队列溢出/磁盘错误/进程终止可能丢记录，同步失败也可能已写入。")
         }

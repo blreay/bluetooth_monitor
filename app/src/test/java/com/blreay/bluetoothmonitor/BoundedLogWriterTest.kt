@@ -4,7 +4,6 @@ import java.io.IOException
 import java.time.ZoneId
 import java.util.ArrayDeque
 import java.util.concurrent.RejectedExecutionException
-import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -47,7 +46,7 @@ internal open class TestLogStorage : LogStorage {
 }
 
 class BoundedLogWriterTest {
-    private class Fixture(capacity: Int = 512, callback: (LogStatus) -> Unit = {}) {
+    private class Fixture(capacity: Int = 64, callback: (LogStatus) -> Unit = {}) {
         val clock = LogTestClock()
         val scheduler = ManualLogScheduler()
         val external = TestLogStorage()
@@ -56,17 +55,15 @@ class BoundedLogWriterTest {
         var checks = 0
         var resolutions = 0
         val boundary = LogStorageBoundary({ checks++; granted }, { resolutions++; external }, { resolutions++; private })
-        val writer = BoundedLogWriter(AuditLog(111, clock, "session-queue", ZoneId.of("UTC")), scheduler, boundary,
+        val writer = BoundedLogWriter(AuditLog(clock, ZoneId.of("UTC")), scheduler, boundary,
             capacity = capacity, batchSize = 4, onStatus = callback)
-        fun event(i: Int, at: Long? = null) {
+        fun event(i: Int) {
             clock.wall = 1_000L + i
-            writer.event("event-$i", "commandId" to "cmd-$i", at = at)
+            writer.event(CompactLogEntry.ScanEnded(i, false, false, "成功"))
         }
     }
-    private fun json(lines: List<String>) = lines.map { assertTrue(it.startsWith("{")); JSONObject(it) }
-
     @Test fun `admission and refresh perform zero file resolution permission checks or reads`() {
-        val f = Fixture()
+        val f = Fixture(128)
         repeat(100) { f.event(it) }
         f.writer.refreshAccess()
         assertEquals(0, f.checks); assertEquals(0, f.resolutions)
@@ -75,7 +72,7 @@ class BoundedLogWriterTest {
         assertEquals(100, f.writer.status().queuedEvents)
     }
     @Test fun `one fixed drain handles all batches without scheduling more work`() {
-        val f = Fixture()
+        val f = Fixture(128)
         repeat(100) { f.event(it) }
         f.scheduler.drain()
         assertEquals(100, f.external.lines.size)
@@ -85,48 +82,37 @@ class BoundedLogWriterTest {
         assertEquals(2, f.scheduler.scheduled)
         f.scheduler.drain()
         assertEquals(101, f.external.lines.size)
+        assertTrue(f.external.attempts.all { it.size <= 4 })
     }
-    @Test fun `overflow evicts oldest pending for newest and records exact dropped time range`() {
+    @Test fun `overflow evicts oldest and never generates a fourth log type`() {
         val f = Fixture(capacity = 3)
         repeat(10) { f.event(it) }
-        val before = f.writer.status()
-        assertEquals(3, before.queuedEvents); assertEquals(7L, before.droppedEvents)
-        assertEquals(7L, before.unreportedDrops!!.count)
-        assertEquals(1_000L, before.unreportedDrops!!.firstOccurredAt)
-        assertEquals(1_006L, before.unreportedDrops!!.lastOccurredAt)
+        assertEquals(3, f.writer.status().queuedEvents); assertEquals(7L, f.writer.status().droppedEvents)
         f.scheduler.drain()
-        val rows = json(f.external.lines)
-        assertEquals(listOf("event-7", "event-8", "event-9"), rows.filter { it.getString("kind") != "log.dropped" }.map { it.getString("kind") })
-        val drops = rows.single { it.getString("kind") == "log.dropped" }.getJSONObject("fields")
-        assertEquals(7L, drops.getLong("count")); assertEquals(7L, drops.getLong("queueCount"))
-        assertEquals(1_000L, drops.getLong("firstOccurredAtMs")); assertEquals(1_006L, drops.getLong("lastOccurredAtMs"))
-        assertEquals(7L, f.writer.status().droppedEvents); assertNull(f.writer.status().unreportedDrops)
+        assertEquals(listOf(7, 8, 9), f.external.lines.map { Regex("扫描：(\\d+)个").find(it)!!.groupValues[1].toInt() })
+        assertEquals(3, f.external.lines.size)
+        assertEquals(7L, f.writer.status().droppedEvents)
+        assertFalse(f.external.lines.any { it.contains("log.dropped") })
     }
-    @Test fun `finite 512 event queue survives a large producer burst with one scheduled task`() {
+    @Test fun `finite 64 default queue survives a large producer burst with one scheduled task`() {
         val f = Fixture()
         repeat(10_000) { f.event(it) }
-        assertEquals(512, f.writer.status().queuedEvents)
-        assertEquals(9_488L, f.writer.status().droppedEvents)
+        assertEquals(64, f.writer.status().queuedEvents)
+        assertEquals(9_936L, f.writer.status().droppedEvents)
         assertEquals(1, f.scheduler.scheduled); assertEquals(1, f.scheduler.tasks.size)
         f.scheduler.drain()
-        assertEquals(513, f.external.lines.size)
-        assertTrue(f.external.lines.all { it.toByteArray(Charsets.UTF_8).size <= 8_192 })
+        assertEquals(64, f.external.lines.size)
+        assertTrue(f.external.lines.all { it.toByteArray(Charsets.UTF_8).size <= 512 })
     }
-    @Test fun `occurrence time and immutable primitive values are captured before scheduling`() {
+    @Test fun `capture before scheduling retains complete timestamp and entry value`() {
         val f = Fixture()
-        val fields = mutableMapOf<String, Any?>("commandId" to "first")
         f.clock.wall = 7_000
-        f.writer.record("received", fields, null)
-        fields["commandId"] = "changed"
+        f.writer.record(CompactLogEntry.ScanEnded(5, false, true, "成功"))
         f.clock.wall = 99_000
-        f.writer.event("source", "operationId" to "source-op", at = 2_000)
+        f.writer.event(CompactLogEntry.ProcessStarted)
         f.clock.wall = 123_000
         f.scheduler.drain()
-        val rows = json(f.external.lines)
-        assertEquals(7_000L, rows[0].getLong("occurredAtMs"))
-        assertEquals("first", rows[0].getJSONObject("fields").getString("commandId"))
-        assertEquals(2_000L, rows[1].getLong("occurredAtMs")); assertEquals(99_000L, rows[1].getLong("receivedAtMs"))
-        assertEquals("source", rows[1].getString("timeSource"))
+        assertEquals(listOf("1970-01-01 00:00:07 扫描：5个设备，目标手环：有\n", "1970-01-01 00:01:39 进程启动\n"), f.external.lines)
     }
     @Test fun `events arriving during worker write use existing drain and do not wait on I O`() {
         val scheduler = ManualLogScheduler()
@@ -137,18 +123,18 @@ class BoundedLogWriterTest {
             override fun append(lines: List<String>): LogWriteResult {
                 if (!inside && lines.isNotEmpty()) {
                     inside = true
-                    writer.event("while-writing", "id" to "two")
+                    writer.event(CompactLogEntry.BluetoothEnded(true, SwitchMode.ORDINARY, "成功"))
                     assertEquals(1, scheduler.scheduled)
                     assertEquals(0, scheduler.tasks.size)
                 }
                 return super.append(lines)
             }
         }
-        writer = BoundedLogWriter(AuditLog(1, LogTestClock()), scheduler,
-            LogStorageBoundary({ true }, { external }, { private }))
-        writer.event("first")
+        writer = BoundedLogWriter(AuditLog(LogTestClock()), scheduler, LogStorageBoundary({ true }, { external }, { private }))
+        writer.event(CompactLogEntry.ProcessStarted)
         scheduler.drain()
-        assertEquals(listOf("first", "while-writing"), json(external.lines).map { it.getString("kind") })
+        assertEquals(2, external.lines.size)
+        assertTrue(external.lines[0].contains("进程启动")); assertTrue(external.lines[1].contains("打开蓝牙"))
         assertEquals(1, scheduler.scheduled)
     }
     @Test fun `scheduler rejection is isolated retains bounded rows and retries only on later admission`() {
@@ -170,34 +156,29 @@ class BoundedLogWriterTest {
         assertEquals(2, f.external.lines.size)
         assertEquals(ExternalLogState.READY, f.writer.status().storage.external)
     }
-    @Test fun `both stores failing makes loss explicit and unsaved summary retries on refresh without spin`() {
+    @Test fun `both stores failing caches loss without spin or an invented summary line`() {
         val f = Fixture(capacity = 2)
         f.external.appendWorks = false; f.private.appendWorks = false
         repeat(4) { f.event(it) }
         f.scheduler.drain()
         assertEquals(4L, f.writer.status().droppedEvents)
-        assertEquals(4L, f.writer.status().unreportedDrops!!.count)
-        assertEquals(2L, f.writer.status().unreportedDrops!!.queueCount)
-        assertEquals(2L, f.writer.status().unreportedDrops!!.storageCount)
         assertEquals(1, f.scheduler.scheduled); assertTrue(f.scheduler.tasks.isEmpty())
         f.external.appendWorks = true; f.private.appendWorks = true
         f.writer.refreshAccess(); f.scheduler.drain()
-        val rows = json(f.external.lines)
-        assertEquals(1, rows.size); assertEquals("log.dropped", rows.single().getString("kind"))
-        assertEquals(4L, rows.single().getJSONObject("fields").getLong("count"))
-        assertNull(f.writer.status().unreportedDrops)
+        assertTrue(f.external.lines.isEmpty())
+        f.event(5); f.scheduler.drain()
+        assertEquals(1, f.external.lines.size)
+        assertEquals(4L, f.writer.status().droppedEvents)
     }
-    @Test fun `dropped source occurrence range is truthful when supplied times are out of order`() {
-        val f = Fixture(capacity = 1)
-        f.event(1, 9_000); f.event(2, 100); f.event(3, 500)
-        assertEquals(100L, f.writer.status().unreportedDrops!!.firstOccurredAt)
-        assertEquals(9_000L, f.writer.status().unreportedDrops!!.lastOccurredAt)
-        assertEquals(1_001L, f.writer.status().unreportedDrops!!.firstReceivedAt)
-        assertEquals(1_002L, f.writer.status().unreportedDrops!!.lastReceivedAt)
+    @Test fun `clock failure is isolated by event and does not schedule or perform IO`() {
+        val f = Fixture()
+        val writer = BoundedLogWriter(AuditLog(AuditClock { error("clock") }), f.scheduler, f.boundary)
+        writer.event(CompactLogEntry.ProcessStarted)
+        assertEquals(0, writer.status().queuedEvents); assertEquals(0, f.scheduler.scheduled); assertEquals(0, f.checks)
     }
     @Test fun `uninitialized singleton status and event do not touch Android APIs`() {
         assertFalse(MibandLog.status().initialized)
-        MibandLog.event("not-initialized")
+        MibandLog.event(CompactLogEntry.ProcessStarted)
         MibandLog.refreshAccess()
         assertFalse(MibandLog.status().initialized)
     }

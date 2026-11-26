@@ -13,7 +13,7 @@
 已实际aapt/apksigner/hash核验原1.2：包名`com.blreay.bluetoothmonitor.nogui`、1.2/code3、2652533字节、APK SHA256`60cfa2fffcc65ae6ad1197855a27e02dde23e1b22fd79211f65872bc0f3d497d`、单一证书`7825ccfb3eb4fa47d7bd87ff70c82800fb0801d67907c69d2825f6c2bb492c9a`。持久`/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.2.apk`；额外构建目录外备份`/tmp/btreset-1.3-baseline-sqj_26dn/original-delivered-1.2.apk`，字节/hash已核验。旧1.0遗失不重开，也不删除原1.1/1.2。
 
 - [x] 探索、轻量设计与真实用户批准；保存实际1.2升级输入。
-- [ ] Task1：紧凑日志、实际摘要、SCAN消息和横排UI；规格/质量/父回归。
+- [x] Task1：紧凑日志、实际摘要、SCAN消息和横排UI；规格/质量/父回归。
 - [ ] Task2：1.3身份/说明、缺签名拒绝、规格/质量及最终整体审查。
 - [ ] Task3：父两次签名构建、实际原/新APK核验、外部保存、当前分支提交推送。
 
@@ -23,7 +23,7 @@
 
 **Test:** 更新1.2专用`AuditLogTest.kt`、`BoundedLogWriterTest.kt`、`RuntimeAuditTest.kt`、`ManualFeedbackTest.kt`的已被1.3取代的格式/详细事件/UI断言，保留相关有限行/异常/去重/authority测试；`RollingLogFileTest.kt`、`LogStorageBoundaryTest.kt`滚动/权限/导出/故障断言不放宽。扩展实际manual/auto扫描seam测试。原295基线安全测试保留，不因新日志降低蓝牙约束；旧UI源码断言确实与新横排/删SCAN卡冲突时只改该UI断言，保持其它断言与测试数量。
 
-- [ ] **1. 先建立最小类型和实际行为RED。** 建议接口如下；允许等价小调整，但报告实际API，不引入字段map/通用event框架：
+- [x] **1. 先建立最小类型和实际行为RED。** 建议接口如下；允许等价小调整，但报告实际API，不引入字段map/通用event框架：
 
 ```kotlin
 sealed interface CompactLogEntry {
@@ -63,15 +63,15 @@ BT_NOGUI_SIGNING_PROPERTIES=/tmp/btreset-1.3-task1-no-signing.properties \
 
 先核验临时签名配置不存在。未定义symbol/编译失败不是行为RED；记录AssertionError与其它实际失败类型，不笼统杜撰。
 
-- [ ] **2. 简化capture/writer并删除详细hooks。** capture只秒级本地日期时间+固定描述，队列存String；默认小队列64、每批16，单一scheduled drain。删session/sequence/eventId/elapsed/source/receipt和log.dropped记录，drop数量可只在cached状态。保留scheduler/storage/onStatus异常隔离、私有原行导出和ACK失败可回放。legacy旧行允许原8KiB限额，新行512；不要因新格式把旧pending当损坏、清空旧根文件或增加转换器。删除Main/receiver/service/coordinator/scan/cleanup/engine的详细事件和RuntimeAudit backend wrapper；执行回原backend，完整保留原Observed invocation/状态读/命令策略，不能把observer当checked backend history。
+- [x] **2. 简化capture/writer并删除详细hooks。** capture只秒级本地日期时间+固定描述，队列存String；默认小队列64、每批16，单一scheduled drain。删session/sequence/eventId/elapsed/source/receipt和log.dropped记录，drop数量可只在cached状态。保留scheduler/storage/onStatus异常隔离、私有原行导出和ACK失败可回放。legacy旧行允许原8KiB限额，新行512；不要因新格式把旧pending当损坏、清空旧根文件或增加转换器。删除Main/receiver/service/coordinator/scan/cleanup/engine的详细事件和RuntimeAudit backend wrapper；执行回原backend，完整保留原Observed invocation/状态读/命令策略，不能把observer当checked backend history。
 
-- [ ] **3. 真实scan摘要。** 主进程guard后process.start改成唯一ProcessStarted。自动run/emit/cancel各真实结束路径最多一个摘要，复用现有去重count并记住已观察目标，目标出现不等于claim/arm成功。手动使用小型annotation-only摘要累计器或现有collector，不加无界集合；目标在每个有效当前广告、保留上限判断之前锁存，之后名字更新不撤销。建议给ManualScanEvents增加有默认body的`summary(value: ScanSummary)`，原必需方法不变；finish和silent retire共用一次close-observation摘要，不让retire递归events.finished。controller按exact operation/command接受末摘要，serviceEnded已pre-mark scanFinished时也不能丢该摘要；完成Toast仍需要原exact retirement/checked terminal，不让摘要释放占用。保留内部观察时钟和8秒准入。
+- [x] **3. 真实scan摘要。** 主进程guard后process.start改成唯一ProcessStarted。自动run/emit/cancel各真实结束路径最多一个摘要，复用现有去重count并记住已观察目标，目标出现不等于claim/arm成功。前置拒绝且未创建被接纳操作/扫描实例的SCAN点击不是一次扫描，只需真实REJECTED消息，不恢复入口日志；已接纳后无法准备/启动则仍需未执行摘要，不编造0/无目标。手动使用小型annotation-only摘要累计器或现有collector，不加无界集合；目标在每个有效当前广告、保留上限判断之前锁存，之后名字更新不撤销。建议给ManualScanEvents增加有默认body的`summary(value: ScanSummary)`，原必需方法不变；finish和silent retire共用一次close-observation摘要，不让retire递归events.finished。controller按exact operation/command接受末摘要，serviceEnded已pre-mark scanFinished时也不能丢该摘要；完成Toast仍需要原exact retirement/checked terminal，不让摘要释放占用。保留内部观察时钟和8秒准入。
 
-- [ ] **4. 真实ON/OFF摘要。** 自动成功OFF在原engine.observe实际OFF→ON handoff，成功ON在原RESTORED terminal结果；manual在原checked finish/quarantine/window/storage失败。SUBMITTED只说明已提交，不能成功；authority未知即使目标硬件已到也要注明未知。从当前exact command原backend history/真实结果读取实际mode，普通后备不能借旧mode；特别是engine.prepare旋转到ON_READY但lastMode仍保留OFF的情况，不能借前阶段推断ON模式。no-op表示未执行。失败/未知/迟到改善按原事实写简短结果。最多小型有界每命令观察去重，防重复采样/同失败事务回调产生重复行；不额外采样、不加计数/恢复判断、不新增policy/store schema/持久logger identity。
+- [x] **4. 真实ON/OFF摘要。** 自动成功OFF在原engine.observe实际OFF→ON handoff，成功ON在原RESTORED terminal结果；manual在原checked finish/quarantine/window/storage失败。SUBMITTED只说明已提交，不能成功；authority未知即使目标硬件已到也要注明未知。从当前exact command原backend history/真实结果读取实际mode，普通后备不能借旧mode；特别是engine.prepare旋转到ON_READY但lastMode仍保留OFF的情况，不能借前阶段推断ON模式。no-op表示未执行。失败/未知/迟到改善按原事实写简短结果。最多小型有界每命令观察去重，防重复采样/同失败事务回调产生重复行；不额外采样、不加计数/恢复判断、不新增policy/store schema/持久logger identity。
 
-- [ ] **5. UI/SCAN反馈。** SCAN正常终态消息含去重数量/100+、目标有/未见；失败/未知/保存失败消息如实，保留同操作同类去重、独立拒绝，不从snapshot/recreate/close重播、不每广告Toast。coordinator不再过滤成功SCAN terminal。删除manualBodies[SCAN]和整个结果渲染consumer，但DetailsText/manual持久结果保持供安全/旧契约。删除logBody/renderLogStatus/每秒cache重绘，仅onResume异步refresh及显式短标签「日志权限」按钮保留，settings fallback不变。两个row均horizontal+equalweight，三个button和两个settingsbutton分行；其它自动状态/历史/累计/权限/恢复保持，不重建dialog重置滚动或改NoDisplay入口。
+- [x] **5. UI/SCAN反馈。** SCAN正常终态消息含去重数量/100+、目标有/未见；失败/未知/保存失败消息如实，保留同操作同类去重、独立拒绝，不从snapshot/recreate/close重播、不每广告Toast。coordinator不再过滤成功SCAN terminal。删除manualBodies[SCAN]和整个结果渲染consumer，但DetailsText/manual持久结果保持供安全/旧契约。删除logBody/renderLogStatus/每秒cache重绘，仅onResume异步refresh及显式短标签「日志权限」按钮保留，settings fallback不变。两个row均horizontal+equalweight，三个button和两个settingsbutton分行；其它自动状态/历史/累计/权限/恢复保持，不重建dialog重置滚动或改NoDisplay入口。
 
-- [ ] **6. 聚焦GREEN、完整回归、审查。** 保存生产使用seam行为：scan目标在101st设备仍记住、重复/后续名变化不丢；取消/failedstart/retire/超时/latecleanup有摘要且不解fence；actualswitch mode/result/unknown/no-op/fallback/checkedfail；logger/Toast抛异常不改变蓝牙；旧行字节导出、无第四类日志。source仅验证UIrow/删卡删说明/guard与删除旧详细hooks，不替代行为。单一Gradle owner运行完整无release命令，规格PASS后质量审查，Important同implementer红绿修/同reviewer复审，父独立完整回归后Task1完成。
+- [x] **6. 聚焦GREEN、完整回归、审查。** 保存生产使用seam行为：scan目标在101st设备仍记住、重复/后续名变化不丢；取消/failedstart/retire/超时/latecleanup有摘要且不解fence；actualswitch mode/result/unknown/no-op/fallback/checkedfail；logger/Toast抛异常不改变蓝牙；旧行字节导出、无第四类日志。source仅验证UIrow/删卡删说明/guard与删除旧详细hooks，不替代行为。单一Gradle owner运行完整无release命令，规格PASS后质量审查，Important同implementer红绿修/同reviewer复审，父独立完整回归后Task1完成。
 
 ## Task2：版本与说明
 
@@ -119,3 +119,36 @@ source /home/admin/.cache/btreset-build/env.sh
 ## 执行记录
 
 按实际发生记录，未执行项不能标完成。用户批准后连续执行，不重复审批，不调用自动fork的review技能、不读代理JSONL；拒绝权限不可绕过或借peer代执行。
+
+### 父交付核验准备（2026-11-27）
+
+- 已批准设计/计划独立提交`273d1f74c2ea7996a155739648f4457acee4bc86`，仅两个文档，实施范围不变。
+- 父使用native Write建立新公开verifier`/tmp/bt-nogui-1.3-verification.py`。它读取公开APK/已生成JUnit与lint以及最终审查后冻结的源码/testcase契约，不读取私密签名输入；最终构建必须符合真实1.3契约，不能沿用1.2详细JSON断言或硬编码403总数。
+- `--baseline-only`实际exit0，报告`/tmp/btreset-1.3-original-public-verification.json`；实际原1.2及额外备份的包名、1.2/code3、2652533字节、原60cfa2 hash和单一7825cc证书均不变；compiled manifest NoDisplay、内部组件、RUN/广播、connectedDevice、Shizuku provider、SDK及all-files已再次核验。
+- 父以实际原1.2测试新DEX class-definition解析器：1个DEX、1596个class定义，18个固定核心定义均真实存在；不是只在DEX字符串里搜索类名。这不代表尚未构建的1.3已通过。
+- Task1生产/测试已冻结，父已核验24份文件hash与冻结manifest SHA256`2cca76a149a89908ce4e3fdee8b07e6acf2f2eda033393e00f5de43039880fbe`；独立规格审查进行中。质量、父fresh回归、版本和最终APK仍待实际完成后记录。
+
+### Task1首轮冻结证据（尚未完成审查）
+
+- 实现证据目录`/tmp/btreset-1.3-task1-20261127-editor-evidence`。父实际检查日志与XML：完整`testReleaseUnitTest assembleDebug lintDebug`exit0、26秒、73任务全部执行，28suite/416tests/0failure/error/skipped；聚焦5suite/101tests/0。不是父fresh构建，也不是正式release。
+- 父逐份`git show bf045315...:<testfile>`与当前字节比较，21个独立测试文件、23个suite条目均不变：原22suite/295安全测试，以及RollingLogFileTest20。LogStorageBoundary23旧测试保留，增加mixed legacy/plaintext replay；具体新旧专用日志测试名变化见`test-name-delta.json`。
+- 父独立XML核验`/tmp/btreset-1.3-task1-parent-evidence-check.json`：格式RED24/1（ComparisonFailure）；owner-seam RED92/22（2ComparisonFailure、15AssertionError、1NullPointerException、4NoSuchElementException）；corner RED48/6及scan-final RED49/2均AssertionError。各run errors/skipped0，编译成功；不能把owner全部22项描述为断言失败。父实际trace确认这5个非断言异常：ManualFeedbackTest.kt:261所需末反馈scanSummary尚未实现而为null；RuntimeAuditTest.kt:79/92/101/129在required summary尚未产生时rows.last为空。属于编译通过的未实现行为，不是fixture建立/基础设施失败；各异常类型仍原样披露。
+- 实际lint XML14项：13Warning/1Fatal ExpiredTargetSdkVersion、MissingPermission0/Error0，含ScopedStorage；不是lint-clean。三个原通知setter弃用warning以及删除详细日志后新暴露的`ManualOperationController.kt:116`冗余saved初始化warning尚在。设备验收未执行。
+- 一个中间GREEN新增测试误期望acceptance存储失败后的engine.read为null；实际原安全协议保留QUARANTINED sentinel。实现者改该新增断言为原隔离事实，未改既有安全策略/测试；最终全绿。审查需核对这个区别，不把错fixture修正当蓝牙逻辑修复。
+
+### 首轮规格审查发现（修复/复审待完成）
+
+- 已核实扫描启动失败回调时序问题：`ManualBleScanner`先发`events.returned(false)`，controller同步finished→retire，可能先把失败摘要关闭为「取消」；若独立exact cleanup已先返回，checked终态可先清owner而丢失真正末摘要/设备。父直接检查生产回调及controller路径确认；现有手工先summary再finished的fake测试不覆盖真实顺序。
+- 同一边界另有事实分类问题：`Started(false,null,true)`已证明未进入注册，scanner却仅凭ticket存在标「状态未确认」。已知未执行应写「未执行」且数量/目标未知；没有真正ended/no-entry证明的超时/迟到工作仍必须保持未知，不能一律按没有entry时间就推断未执行。
+- 这两项影响1.3扫描日志/反馈真实性，要求同实现者用生产使用的Started交付seam补两个cleanup顺序及known-notinvoked/unknown对照的行为RED/GREEN，原cleanup/authority/lease协议不改；规格复审PASS前不进入质量或正式打包。
+- 同实现者在既有`ScanSummary.kt`抽取实际scanner使用的同步Started交付/源事实seam，机械抽取后的原聚焦101项保持GREEN；没有改controller。新加7项测试使用真实controller、checked store、retirement、exact owner；父核验修复RED目录`/tmp/btreset-1.3-task1-spec-fix-20261127-editor/red-xml`为5suite/108tests/4failure/0error/skipped，4项均AssertionError，分别重现retain→取消、cleanup先返回→丢100+/目标/设备、knownnotinvoked→unknown、entry源事实存在但nanos缺失→误未执行。超时/迟到未知、原native注册在途与新owner迟到、成功start不等扫描完成3项对照在旧行为已通过。
+- 抽取先有一次public/internal类型可见性编译失败，机械修正后才跑上述真正行为RED，原日志另留；该编译失败不计RED。以下记录实际后续GREEN/full与复审，不把先前待办提前标完成。
+
+### Task1窄修复冻结与规格复审（2026-11-27）
+
+- 实现者补充publication异常回归：编译成功的5suite/109tests/1failure（AssertionError）RED，随后以nested finally保留原ended返回交付和exact retirement；未改controller/native协议。最终聚焦5suite/109tests、完整28suite/424tests，均0failure/error/skipped；完整无release命令exit0、19秒、73任务执行。证据`/tmp/btreset-1.3-task1-spec-fix-20261127-editor`；这仍是实现者运行，不冒充父fresh构建。
+- 父独立核验实际XML、RED异常类型、24个当前源码hash及`git diff --check`，记录`/tmp/btreset-1.3-task1-spec-fix-parent-evidence-check.json`。新冻结manifest SHA256`a81b7bd63a0504a690e0b0e8226f195d7ab9c9aaffd85f20478eef6fe6a69890`；与初冻结只有`ManualBleScanner.kt`、`ScanSummary.kt`、`ManualFeedbackTest.kt`3文件改变，另21不变。
+- 同独立规格审查者实际复审返回SPEC PASS：真实scanner调用Started同步交付seam，失败末摘要/设备先于可重入returned终态；captured entry或真实entry返回证明执行，ended/null-return/no-capture证明未执行，未结束且无entry仍未知。两个原finding均关闭，没有新verified规格缺陷；直接读取真实controller/store/retirement/exact-owner回归，验证exception finally、迟到/新owner及成功注册不是扫描完成。
+- 原295安全case与Rolling20仍字节不变并全部执行；ManualFeedback保留原24项加8项。规格审查未改文件/跑Gradle/读秘密/委派；24hash在审查结束仍匹配。已开始fresh独立质量审查；Task1总checkbox暂不标完成，版本/正式APK仍待执行。
+- 父在无其它Gradle owner时fresh强制完整`testReleaseUnitTest assembleDebug lintDebug`，指定先核验不存在的临时签名配置；实际exit0、18秒、73任务全部执行。`/tmp/btreset-1.3-parent-task1-iTh7cS/full.log`、`full-xml`、`lint.xml`及`verification.json`保留：28suite/424tests/0failure/error/skipped，全部case names与规格审查冻结精确相同；24源码hash及23原安全/滚动suite条目的baseline字节仍一致，`git diff --check`通过。lint仍14项（13Warning、1Fatal ExpiredTargetSdkVersion、Error0/MissingPermission0），原通知弃用与saved冗余warning如实保留；未构建release，未做设备验收。
+- fresh独立质量审查返回Quality APPROVED，无verified Critical/Important或新actionable Minor。实际阅读24冻结路径及必要未改接线，独立验证21测试文件（295安全case+Rolling20）和20核心接线文件字节与baseline一致、原Storage23名称保留及mixed replay新增；24hash和manifest SHA在结束匹配。冗余initializer仅已披露非阻塞warning，不夹带清理。审查只读，无Gradle/委派/秘密读取。规格、质量与父fresh回归三门均完成，Task1标完成；版本和正式APK仍是后续任务。

@@ -4,14 +4,13 @@ import android.app.Application
 import android.content.Context
 import android.os.Environment
 import android.os.Process
-import android.os.SystemClock
 import java.io.File
 import java.util.concurrent.Executors
 
 /**
  * Permission, storage resolution, and all reads/writes belong to the fixed logger worker.
  * Replay preserves the original serialized rows. Root success followed by a kill or failed private
- * acknowledgement can repeat their event IDs: this is deliberately not an exactly-once audit store.
+ * acknowledgement can repeat their original lines: this is deliberately not an exactly-once store.
  * This storage is entirely independent of Bluetooth safety persistence and never authorizes work.
  */
 class LogStorageBoundary(
@@ -87,7 +86,7 @@ class LogStorageBoundary(
         try { write() } catch (failure: Exception) { LogWriteResult(false, failure.javaClass.simpleName) }
 }
 
-/** Not wired to the runtime until Task2. Holds only the main app's application context. */
+/** Holds only the main app's application context. Storage is lazy and worker-confined. */
 object MibandLog : AuditSink {
     @Volatile private var writer: BoundedLogWriter? = null
     @Volatile private var initializationFailure: String? = null
@@ -105,10 +104,8 @@ object MibandLog : AuditSink {
                 external = { RollingLogFile(File(Environment.getExternalStorageDirectory(), "miband.log")) },
                 pending = { RollingLogFile(File(app.filesDir, "miband-log-pending.log")) },
             )
-            writer = BoundedLogWriter(AuditLog(Process.myPid(), object : AuditClock {
-                override fun wallMillis() = System.currentTimeMillis()
-                override fun monotonicNanos() = SystemClock.elapsedRealtimeNanos()
-            }), LogScheduler { task -> executor.execute { task() } }, storage, onStatus = { notifications.update(it) })
+            writer = BoundedLogWriter(AuditLog(AuditClock { System.currentTimeMillis() }),
+                LogScheduler { task -> executor.execute { task() } }, storage, onStatus = { notifications.update(it) })
             initializationFailure = null
             writer?.refreshAccess()
         } catch (failure: Exception) {
@@ -116,9 +113,7 @@ object MibandLog : AuditSink {
         }
     }
 
-    override fun record(name: String, fields: Map<String, Any?>, occurredAt: Long?) {
-        writer?.record(name, fields, occurredAt)
-    }
+    override fun record(entry: CompactLogEntry) { writer?.record(entry) }
     fun status(): LogStatus = writer?.status() ?: LogStatus(initializationFailureType = initializationFailure)
     fun refreshAccess() { writer?.refreshAccess() }
 }

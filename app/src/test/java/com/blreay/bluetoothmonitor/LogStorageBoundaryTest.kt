@@ -10,7 +10,8 @@ import org.junit.Test
 class LogStorageBoundaryTest {
     private class Fixture {
         val clock = LogTestClock()
-        val audit = AuditLog(7, clock, "session-storage", ZoneId.of("UTC"))
+        private var serial = 0
+        data class LegacyRow(val line: String, val eventId: String, val occurredAt: Long, val receivedAt: Long)
         val root = TestLogStorage()
         val private = TestLogStorage()
         var granted = false
@@ -18,7 +19,13 @@ class LogStorageBoundaryTest {
         var rootResolutions = 0
         var privateResolutions = 0
         val boundary = LogStorageBoundary({ checks++; granted }, { rootResolutions++; root }, { privateResolutions++; private })
-        fun row(name: String, at: Long? = null) = audit.capture(name, mapOf("runId" to "exact-run"), at)
+        fun row(name: String, at: Long? = null): LegacyRow {
+            val id = "session-storage:${++serial}"
+            val occurred = at ?: clock.wall
+            val line = JSONObject().put("kind", name).put("eventId", id).put("occurredAtMs", occurred)
+                .put("receivedAtMs", clock.wall).put("fields", JSONObject().put("runId", "exact-run")).toString() + "\n"
+            return LegacyRow(line, id, occurred, clock.wall)
+        }
     }
     @Test fun `construction and cached status perform no filesystem or permission work`() {
         val f = Fixture()
@@ -52,6 +59,19 @@ class LogStorageBoundaryTest {
             assertEquals(row.occurredAt, json.getLong("occurredAtMs"))
             assertEquals(row.receivedAt, json.getLong("receivedAtMs"))
         }
+    }
+    @Test fun `mixed legacy JSON and new plain lines replay byte for byte before incoming lines`() {
+        val f = Fixture()
+        val old = f.row("legacy", 123L).line
+        val plain = AuditLog(f.clock, ZoneId.of("UTC")).capture(CompactLogEntry.ScanEnded(5, false, true, "成功"))
+        assertTrue(f.boundary.persist(listOf(old, plain)))
+        val next = AuditLog(f.clock, ZoneId.of("UTC")).capture(CompactLogEntry.ProcessStarted)
+        f.granted = true
+        assertTrue(f.boundary.persist(listOf(next)))
+        assertEquals(listOf(old, plain, next), f.root.lines)
+        assertEquals(listOf(old, plain), f.root.attempts.first())
+        assertTrue(f.private.lines.isEmpty()); assertEquals(1, f.private.clears)
+        assertEquals(123L, JSONObject(f.root.lines.first()).getLong("occurredAtMs"))
     }
     @Test fun `new event after authorization replays old rows before the new row`() {
         val f = Fixture(); val old = f.row("old"); val next = f.row("new")
@@ -186,9 +206,9 @@ class LogStorageBoundaryTest {
         val privateFile = File("/virtual/private.log"); val rootFile = File("/virtual/root.log")
         val io = MemoryLogFileIo(); var granted = false
         val boundary = LogStorageBoundary({ granted }, { RollingLogFile(rootFile, io) }, { RollingLogFile(privateFile, io) })
-        val log = AuditLog(7, LogTestClock())
         repeat(12) { batch ->
-            val rows = (0 until 200).map { log.capture("batch-$batch-$it", mapOf("reason" to "中😀".repeat(500))).line }
+            // Legacy 1.2-sized rows still exercise the same trim/retention fault contract.
+            val rows = (0 until 200).map { JSONObject().put("kind", "batch-$batch-$it").put("reason", "中😀".repeat(500)).toString() + "\n" }
             assertTrue(boundary.persist(rows))
             assertTrue(io.files[privateFile]!!.size <= RollingLogFile.MAX_BYTES)
         }

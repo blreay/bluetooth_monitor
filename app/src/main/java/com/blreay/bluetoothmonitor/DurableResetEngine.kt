@@ -54,13 +54,20 @@ class DurableResetEngine(
     private val newId: () -> String,
     private val audit: AuditSink = AuditSink.NONE,
 ) {
+    private val summary = RuntimeAudit(audit)
+    private fun log(record: ResetRecord, result: String, reliable: Boolean = false) {
+        summary.end(record.runId, record.commandId, result, reliable)
+    }
     fun read() = store.read()
     /** Task2 calls this only after the run owner's guarded claimMatch succeeds. */
     fun armAccepted(match: AcceptedResetMatch, wantsToast: Boolean): ResetRecord? {
         if (read() != null) return null
         val record = ResetRecord(match.runId, newId(), wantsToast = wantsToast,
             history = listOf(BackendEntry(SwitchMode.NONE, match.scanSummary.take(512))))
-        if (!store.accept(match, record)) return null
+        if (!store.accept(match, record)) {
+            audit.event(CompactLogEntry.BluetoothEnded(false, SwitchMode.NONE, "存储失败，未执行"))
+            return null
+        }
         return finishArm(record)
     }
 
@@ -75,10 +82,13 @@ class DurableResetEngine(
         if (previous?.commandId == current.commandId && previous.enteredAt != null) return false
         val evidence = ResetCommandEvidence(current.runId, current.commandId, enteredAt = enteredAt,
             requestedAt = current.dispatchedAt.takeIf { it > 0L })
-        return store.commit(current, current.copy(version = current.version + 1,
+        summary.entered(current.runId, current.commandId)
+        val saved = store.commit(current, current.copy(version = current.version + 1,
             offEvidence = if (off) evidence else current.offEvidence,
             onEvidence = if (off) current.onEvidence else evidence,
             onEnteredAfterOffObservation = if (off) false else current.offEvidence?.observedAt != null))
+        if (!saved) log(current, "存储失败，状态未确认")
+        return saved
     }
     fun arm(runId: String, wantsToast: Boolean, scanSummary: String? = null): ResetRecord? {
         if (read() != null) return null
@@ -89,9 +99,11 @@ class DurableResetEngine(
     }
 
     private fun finishArm(record: ResetRecord): ResetRecord? {
+        summary.begin(record.runId, record.commandId, false)
         if (!alarm()) {
-            store.commit(record, record.copy(version = record.version + 1, stage = ResetStage.ARM_FAILED,
+            val saved = store.commit(record, record.copy(version = record.version + 1, stage = ResetStage.ARM_FAILED,
                 reason = "恢复闹钟未能安排；未关闭蓝牙"))
+            log(record, if (saved) "未执行" else "存储失败，状态未确认", saved)
             return null
         }
         return record
@@ -110,7 +122,9 @@ class DurableResetEngine(
             offEvidence = if (enabled) expected.offEvidence else ResetCommandEvidence(expected.runId, expected.commandId, requestedAt = now),
             onEvidence = if (enabled) ResetCommandEvidence(expected.runId, expected.commandId, requestedAt = now) else expected.onEvidence,
             reason = "${if (enabled) "ON" else "OFF"} 已持久化派发；尚未确认调用/硬件状态")
-        return if (store.commit(expected, next)) next else null
+        if (!store.commit(expected, next)) { log(expected, "存储失败，状态未确认"); return null }
+        summary.begin(next.runId, next.commandId, enabled)
+        return next
     }
 
     /** A NOT_INVOKED, proven-ended attempt may hand off to one fresh same-target command. */
@@ -124,7 +138,9 @@ class DurableResetEngine(
             dispatchedAt = now, commandDeadline = now + 16_000L, authorityEnded = false,
             offDispatchedAt = if (off) now else settled.offDispatchedAt,
             reason = "旧请求确定未提交且执行已结束；同目标普通请求新命令，保留同一运行")
-        return if (store.commit(settled, next)) next else null
+        if (!store.commit(settled, next)) { log(settled, "存储失败，状态未确认"); return null }
+        summary.begin(next.runId, next.commandId, !off)
+        return next
     }
 
     /** Observation versions may advance during RPC. Never rebase across command or phase changes. */
@@ -155,7 +171,10 @@ class DurableResetEngine(
             offEvidence = if (off) evidence else current.offEvidence,
             onEvidence = if (off) current.onEvidence else evidence,
             modeBits = history.bits, history = history.entries, reason = outcome.reason.take(1024))
-        return if (store.commit(current, next)) next else null
+        summary.outcome(current.runId, current.commandId, outcome)
+        if (!store.commit(current, next)) { log(current, "存储失败，状态未确认"); return null }
+        if (!outcome.authorityEnded) log(next, "执行结束未确认")
+        return next
     }
 
     /** The accepted durable completion, not an expired receiver/service lease, owns its followup alarm. */
@@ -175,6 +194,7 @@ class DurableResetEngine(
         val failed = expected.copy(version = expected.version + 1,
             reason = "${expected.reason.take(700)}；$failure", modeBits = history.bits, history = history.entries)
         val committed = store.commit(expected, failed)
+        log(expected, if (committed) "恢复安排失败，状态未确认" else "存储失败，状态未确认")
         return ResetContinuation(if (committed) failed else expected, false,
             failure + if (committed) "" else "；故障详情存储更新失败，原安全记录仍保留")
     }
@@ -184,8 +204,10 @@ class DurableResetEngine(
         if (current.runId != command.runId || current.commandId != command.commandId) return false
         val history = BackendHistory(current.history, current.modeBits)
         history.add(entry.mode, entry.reason)
-        return store.commit(current, current.copy(version = current.version + 1,
+        val saved = store.commit(current, current.copy(version = current.version + 1,
             modeBits = history.bits, history = history.entries, reason = entry.reason.take(1024)))
+        if (!saved) log(current, "存储失败，状态未确认")
+        return saved
     }
 
     fun observe(state: AdapterState, sampledAt: Long? = clock(), durationMs: Long? = null): RecoveryStep {
@@ -203,28 +225,32 @@ class DurableResetEngine(
                 off.copy(observedAt = now) else current.offEvidence,
             onEvidence = if (state == AdapterState.ON && on != null && on.observedAt == null)
                 on.copy(observedAt = now) else current.onEvidence)
-        fun save(step: RecoveryStep): RecoveryStep = if (store.commit(current, next)) step else RecoveryStep.STORAGE_FAILED
+        fun save(step: RecoveryStep): RecoveryStep {
+            if (!store.commit(current, next)) { log(current, "存储失败，状态未确认"); return RecoveryStep.STORAGE_FAILED }
+            if (step == RecoveryStep.EXHAUSTED) log(current, "状态未确认")
+            if (step == RecoveryStep.QUARANTINED) log(current, "执行结束未确认")
+            return step
+        }
         fun end(step: RecoveryStep): RecoveryStep {
             // Capture the terminal decision boundary, NOT the earlier worker's state sample/return time.
             val terminal = next.copy(terminalRecordedAt = clock())
             val disposition = if (step == RecoveryStep.RESTORED) ResetDisposition.RESTORED
                 else if (current.stage == ResetStage.ARM_FAILED) ResetDisposition.ARM_FAILED else ResetDisposition.FAILED
             val saved = store.terminal(current, terminal, disposition)
-            // Observe the ACTUAL confirmed transaction, not a notification or a second counting policy.
-            val snapshot = (store as? CheckedResetStore)?.snapshot()
-            val row = snapshot?.history?.rows?.find { it.runId == current.runId }
-            audit.event("automatic.terminal.save", "runId" to current.runId, "commandId" to current.commandId,
-                "version" to terminal.version, "saved" to saved, "disposition" to disposition.name,
-                "counted" to row?.counted.takeIf { saved }, "total" to snapshot?.history?.total,
-                "state" to state, "authorityEnded" to current.authorityEnded, "sampledAt" to sampledAt,
-                at = terminal.terminalRecordedAt)
+            log(current, if (!saved) "存储失败，状态未确认" else if (step == RecoveryStep.RESTORED) "成功"
+                else if (current.lastMode == SwitchMode.NONE) "未执行" else "失败", saved)
             return if (saved) step else RecoveryStep.STORAGE_FAILED
         }
         fun prepare(enabled: Boolean, ordinary: Boolean = false): RecoveryStep {
             next = next.copy(commandId = newId(), stage = if (enabled) ResetStage.ON_READY else ResetStage.OFF_READY,
                 phase = if (enabled) ReEnablePolicy.Phase.WAITING_ON else ReEnablePolicy.Phase.WAITING_OFF,
                 authorityEnded = true, ordinaryOnly = ordinary)
-            return save(if (enabled) RecoveryStep.DISPATCH_ON else RecoveryStep.DISPATCH_OFF)
+            val step = save(if (enabled) RecoveryStep.DISPATCH_ON else RecoveryStep.DISPATCH_OFF)
+            if (step != RecoveryStep.STORAGE_FAILED && summary.matches(current.runId, current.commandId)) {
+                if (enabled && current.phase == ReEnablePolicy.Phase.WAITING_OFF && state == AdapterState.OFF) log(current, "成功", true)
+                summary.begin(next.runId, next.commandId, enabled) // fresh ON starts with NONE, never old OFF lastMode
+            }
+            return step
         }
         // No memory/Future, cancellation, timeout, OFF observation, or expired deadline is an execution fence.
         if (!current.authorityEnded || current.stage == ResetStage.QUARANTINED) {
@@ -306,11 +332,18 @@ class DurableResetEngine(
         val offEvidence = current.offEvidence?.takeIf {
             it.runId == current.runId && it.commandId == current.commandId && it.enteredAt != null
         }
-        return store.commit(current, current.copy(version = current.version + 1, stage = ResetStage.ON_READY,
+        val next = current.copy(version = current.version + 1, stage = ResetStage.ON_READY,
             firstOffObservedAt = current.firstOffObservedAt ?: offObservedAt,
             offEvidence = if (offObservedAt != null && offEvidence != null && offEvidence.observedAt == null)
                 offEvidence.copy(observedAt = offObservedAt) else current.offEvidence,
             phase = ReEnablePolicy.Phase.WAITING_ON, commandId = newId(), ordinaryOnAttempts = 0,
-            attempts = 0, extraObservations = 0, ordinaryOnly = false, reason = "用户显式继续/重试恢复；只在实际 OFF 时派发 ON，不重放 OFF"))
+            attempts = 0, extraObservations = 0, ordinaryOnly = false, reason = "用户显式继续/重试恢复；只在实际 OFF 时派发 ON，不重放 OFF")
+        val saved = store.commit(current, next)
+        if (!saved) log(current, "存储失败，状态未确认")
+        else if (summary.matches(current.runId, current.commandId)) {
+            if (current.phase == ReEnablePolicy.Phase.WAITING_OFF && observed == AdapterState.OFF) log(current, "成功", true)
+            summary.begin(next.runId, next.commandId, true)
+        }
+        return saved
     }
 }

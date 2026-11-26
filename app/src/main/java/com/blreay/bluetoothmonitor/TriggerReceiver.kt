@@ -10,13 +10,7 @@ import android.os.SystemClock
 /** Automation entry: legal FGS handoff, or a six-second scan with nine-second finishOnce backstop. */
 class TriggerReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val requestId = java.util.UUID.randomUUID().toString()
-        MibandLog.event("receiver.ingress", "requestId" to requestId, "receiver" to "trigger", "action" to intent.action,
-            "component" to intent.component?.flattenToShortString())
-        if (intent.action != action(context)) {
-            MibandLog.event("receiver.refused", "requestId" to requestId, "reason" to "action mismatch")
-            return
-        }
+        if (intent.action != action(context)) return
         val pending = goAsync()
         val handler = Handler(Looper.getMainLooper())
         val lease = CommandLease({ SystemClock.elapsedRealtime() }, SystemClock.elapsedRealtime() + 9_000L)
@@ -27,7 +21,7 @@ class TriggerReceiver : BroadcastReceiver() {
             if (completion.finish()) pending.finish()
         }
         handler.postDelayed(backstop, 9_000L)
-        coordinator.broadcastScan(intent.getBooleanExtra(Notifier.EXTRA_TOAST, false), lease, requestId) {
+        coordinator.broadcastScan(intent.getBooleanExtra(Notifier.EXTRA_TOAST, false), lease) {
             if (completion.finish()) {
                 handler.removeCallbacks(backstop)
                 lease.cancel()
