@@ -14,7 +14,7 @@
 
 - [x] 探索、轻量设计与真实用户批准；保存实际1.2升级输入。
 - [x] Task1：紧凑日志、实际摘要、SCAN消息和横排UI；规格/质量/父回归。
-- [ ] Task2：1.3身份/说明、缺签名拒绝、规格/质量及最终整体审查。
+- [x] Task2：1.3身份/说明、缺签名拒绝、规格/质量及最终整体审查。
 - [ ] Task3：父两次签名构建、实际原/新APK核验、外部保存、当前分支提交推送。
 
 ## Task1：一个cohesive日志/UI实现任务
@@ -77,7 +77,7 @@ BT_NOGUI_SIGNING_PROPERTIES=/tmp/btreset-1.3-task1-no-signing.properties \
 
 **Modify:** `app/build.gradle.kts`、`app/src/test/java/com/blreay/bluetoothmonitor/AppIdentityBoundaryTest.kt`、`README.md`；父维护本计划/设计状态。
 
-- [ ] **1. 版本RED/GREEN。** 只改两个版本测试到1.3/+4，12项身份测试仍在；先实际编译成功断言RED，再最小改：
+- [x] **1. 版本RED/GREEN。** 只改两个版本测试到1.3/+4，12项身份测试仍在；先实际编译成功断言RED，再最小改：
 
 ```kotlin
 // Version 1.3 uses local code 4, or the CI run number plus 4,
@@ -89,8 +89,8 @@ versionName = "1.3"
 
 保留同applicationId/namespace/SDK/AIDL/UserService协议version1、生产依赖、BT_NOGUI私密配置/78证书pin/退役证书拒绝。不得读/替换/新建私钥。
 
-- [ ] **2. README。** 更新轻量三类纯文本例子、秒级、无设备列表、SCAN消息/两个按钮行/无日志说明、短日志授权、同根文件3MiB/trim1MiB/旧行自然滚动/私有失败和强杀边界。说明controller安全记录和内部计时不因精简删除。原1.0丢失与实际1.1/1.2历史数据保持；新1.3实际artifact数据只在父核验后写。
-- [ ] **3. 缺配置完整test/debug/lint和release拒绝。** 临时不存在BT_NOGUI_SIGNING_PROPERTIES完整命令成功；assembleRelease同路径应在validateNoguiReleaseSigning明确拒绝，expected fail-closed不是成功release/行为RED。两阶段review，再独立整体审查全部1.3 baseline diff/new文件及安全未变。
+- [x] **2. README。** 更新轻量三类纯文本例子、秒级、无设备列表、SCAN消息/两个按钮行/无日志说明、短日志授权、同根文件3MiB/trim1MiB/旧行自然滚动/私有失败和强杀边界。说明controller安全记录和内部计时不因精简删除。原1.0丢失与实际1.1/1.2历史数据保持；新1.3实际artifact数据只在父核验后写。
+- [x] **3. 缺配置完整test/debug/lint和release拒绝。** 临时不存在BT_NOGUI_SIGNING_PROPERTIES完整命令成功；assembleRelease同路径应在validateNoguiReleaseSigning明确拒绝，expected fail-closed不是成功release/行为RED。两阶段review，再独立整体审查全部1.3 baseline diff/new文件及安全未变。
 
 ## Task3：父签名构建与交付
 
@@ -152,3 +152,18 @@ source /home/admin/.cache/btreset-build/env.sh
 - 原295安全case与Rolling20仍字节不变并全部执行；ManualFeedback保留原24项加8项。规格审查未改文件/跑Gradle/读秘密/委派；24hash在审查结束仍匹配。已开始fresh独立质量审查；Task1总checkbox暂不标完成，版本/正式APK仍待执行。
 - 父在无其它Gradle owner时fresh强制完整`testReleaseUnitTest assembleDebug lintDebug`，指定先核验不存在的临时签名配置；实际exit0、18秒、73任务全部执行。`/tmp/btreset-1.3-parent-task1-iTh7cS/full.log`、`full-xml`、`lint.xml`及`verification.json`保留：28suite/424tests/0failure/error/skipped，全部case names与规格审查冻结精确相同；24源码hash及23原安全/滚动suite条目的baseline字节仍一致，`git diff --check`通过。lint仍14项（13Warning、1Fatal ExpiredTargetSdkVersion、Error0/MissingPermission0），原通知弃用与saved冗余warning如实保留；未构建release，未做设备验收。
 - fresh独立质量审查返回Quality APPROVED，无verified Critical/Important或新actionable Minor。实际阅读24冻结路径及必要未改接线，独立验证21测试文件（295安全case+Rolling20）和20核心接线文件字节与baseline一致、原Storage23名称保留及mixed replay新增；24hash和manifest SHA在结束匹配。冗余initializer仅已披露非阻塞warning，不夹带清理。审查只读，无Gradle/委派/秘密读取。规格、质量与父fresh回归三门均完成，Task1标完成；版本和正式APK仍是后续任务。
+- 父在核对冻结源码、fresh零失败报告和exact允许列表后提交Task1：`a5bba544404e14ef4e13c04adc0b9b7662fdaaa1`，25路径（24生产/测试+本执行计划），提交后工作树clean。未push；fresh单一Task2实现者开始版本/README任务，父不并行跑Gradle或修改其3路径。
+- 父以实际原1.2 DEX class-definition确认`AuditRow`、`LogDropRange`确实存在；最终1.3契约将要求精简typed/summary/helper实际定义并禁止这两个退役定义，不误禁仍复用类名的小型`RuntimeAudit`。这仅为公开verifier准备，不冒充最终1.3 APK已验证。
+
+### Task2版本RED（后续回归/审查待完成）
+
+- 父独立读取`/tmp/btreset-task2-1.3-FQeRQ4ax/red-junit`与`red.log`：身份12项全部执行，2failure/0error/skipped，单位测试编译成功后才在test任务失败。真实类型为+4预期的`java.lang.AssertionError`（line31）和1.3版本预期的`org.junit.ComparisonFailure`（line54），不是编译/基础设施故障。
+- 父首次证据脚本错把两个失败都要求完全相同的AssertionError类型而自检失败；修正为保留上述两个实际类型后核验通过。未因此修改生产/测试；原12个case names保留。实现者继续GREEN/完整缺配置回归及明确release fail-closed，父不并行Gradle。
+- Task2实现者完成并冻结3路径：build仅1.3/+4和对应注释，身份保留12个名称与另10项原正文，README更新轻量描述并保留真实1.1/1.2历史与1.0遗失。父独立检查源hash及实际GREEN/full XML：聚焦12/0，完整28suite/424tests/0failure/error/skipped、19秒/73任务全执行；424 case names与Task1父fresh报告完全一致。Task1的24文件hash全部仍匹配，`git diff --check`通过。
+- 独立缺配置release真实exit1，在`validateNoguiReleaseSigning`明确报告`private signing properties are unavailable`，没有成功packageRelease。完整缺配置test/debug/lint实际exit0，lint仍14项（13Warning/1Fatal ExpiredTargetSdkVersion、MissingPermission0/Error0），不是lint-clean。父证据`/tmp/btreset-1.3-task2-parent-evidence-check.json`；已开始fresh规格审查，质量/整体/两次正式签名构建仍待完成。
+- Task2首轮SPEC FAIL仅README扫描说明：合并自动/手动描述未明确唯一地址去重计数、100+只适用手动保留上限，以及曾观察目标在超限/名称变化后仍锁存。父核对README95、自动seenAddresses计数和DiscoveredDevices原逻辑确认；自动101个唯一设备实际是101而非100+。交同实现者只做README事实澄清，不改已通过Task1的集合/策略或测试；规格复审前不进入质量。
+- 同实现者只改README95，父读实际一行diff并核验新README SHA256`a8b232b69cd0b3ee1c8f900c21a249222c3a039f0ab7c33cca1dd3186e3ff04a`，build/身份/24Task1文件hash不变。该文档修正未由实现者重跑Gradle，不冒充fresh；同规格审查者直接复审返回SPEC PASS，唯一finding关闭、无剩余Task2规格缺口，3路径和冻结副本hash匹配。已开始fresh独立质量审查。
+- 父随后fresh完整强制无release回归：`/tmp/btreset-1.3-parent-task2-U2u1MC/full.log`、`full-xml`、`lint.xml`与`verification.json`，exit0、19秒、73任务全执行、28suite/424tests/0failure/error/skipped，全部case names匹配冻结；27源码/README/hash不变，diff-check通过。lint仍14项（13Warning/1Fatal、MissingPermission0/Error0），未构建正式release/未做设备验收；以下记录后续审查。
+- fresh独立Task2质量审查返回Quality APPROVED，无Critical/Important/Minor。直接读3实际路径与未改接线，确认最小版本diff、原12身份名称/10其余正文以及全424声明名称不变；README准确轻量/存储/UI/100+语义和历史/未完成交付边界。3hash在审查开始/结束均匹配，无写入/Gradle/委派/秘密读取。已派fresh最终整体只读审查全部baseline→working-tree1.3改动；该结果前不开始正式签名构建。
+- fresh最终整体审查返回FINAL READY，无verified Critical/Important或新actionable Minor。实际审查完整29路径（19生产、6测试、build、README、2批准文档），45核心/资源/build/wrapper/CI路径与baseline字节相同；22suite/295安全case及Rolling20仍覆盖，身份仅两项版本正文更新。独立核验父28suite/424tests全部名称与现源码声明吻合、0failure/error/skipped；27冻结hash及manifest SHA在结束匹配，diff-check通过。只读，无Gradle/委派/秘密读取。Task2完成，接下来才开始Task3两次正式签名构建与实际交付。
+- 正式构建前父再次`--baseline-only`核验真实原1.2、额外备份及1.1：`/tmp/btreset-1.3-before-final-originals-jm5rsF.json`exit0，原版本/code/字节/hash/单一78证书与编译manifest均不变。

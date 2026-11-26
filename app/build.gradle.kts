@@ -11,10 +11,10 @@ plugins {
 }
 
 // versionCode must rise on every CI build or Android refuses to
-// overwrite-install the new APK. Version 1.2 uses local code 3, or the CI run
-// number plus 3, to upgrade the delivered No-GUI 1.1/code 2 APK.
+// overwrite-install the new APK. Version 1.3 uses local code 4, or the CI run
+// number plus 4, to upgrade the delivered No-GUI 1.2/code 3 APK.
 val ciRunNumber: Int? = providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull()
-val autoVersionCode: Int = (ciRunNumber ?: 0) + 3
+val autoVersionCode: Int = (ciRunNumber ?: 0) + 4
 
 // Private signing material stays outside the repository. Missing or unreadable
 // properties are tolerated here so tests/debug work without release credentials.
@@ -48,7 +48,7 @@ android {
         // still needs these calls when privileged Shizuku control is unavailable.
         targetSdk = 32
         versionCode = autoVersionCode
-        versionName = "1.2"
+        versionName = "1.3"
     }
 
     signingConfigs {

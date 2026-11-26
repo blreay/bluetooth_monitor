@@ -28,10 +28,10 @@ class AppIdentityBoundaryTest {
     @Test fun `version 1_2 dependencies and ordinary build conventions stay compatible`() {
         val build = buildScript()
         assertTrue(build.contains("providers.environmentVariable(\"GITHUB_RUN_NUMBER\")"))
-        assertTrue("Version 1.2 must keep the nullable CI run convention with offset 3",
-            build.contains("val autoVersionCode: Int = (ciRunNumber ?: 0) + 3"))
+        assertTrue("Version 1.3 must keep the nullable CI run convention with offset 4",
+            build.contains("val autoVersionCode: Int = (ciRunNumber ?: 0) + 4"))
         assertTrue(build.contains("versionCode = autoVersionCode"))
-        assertTrue(build.contains("versionName = \"1.2\""))
+        assertTrue(build.contains("versionName = \"1.3\""))
         assertTrue(build.contains("isMinifyEnabled = false"))
         assertTrue(build.contains("isShrinkResources = false"))
         assertTrue(build.contains("aidl = true"))
@@ -51,13 +51,13 @@ class AppIdentityBoundaryTest {
         val build = buildScript()
         val versionName = Regex("versionName\\s*=\\s*\"([^\"]+)\"")
             .find(build)?.groupValues?.get(1)
-        assertEquals("The No-GUI upgrade must be named 1.2", "1.2", versionName)
+        assertEquals("The No-GUI upgrade must be named 1.3", "1.3", versionName)
         val codeOffset = Regex("val autoVersionCode: Int = \\(ciRunNumber \\?: 0\\) \\+ (\\d+)")
             .find(build)?.groupValues?.get(1)?.toInt()
         assertNotNull("Keep the nullable CI run number plus explicit offset convention", codeOffset)
-        assertEquals("Local builds must upgrade delivered 1.1/code 2 to code 3", 3, codeOffset)
+        assertEquals("Local builds must upgrade delivered 1.2/code 3 to code 4", 4, codeOffset)
         for (ciRun in listOf(1, 42, 1000)) {
-            assertEquals("CI run $ciRun must use run number plus 3", ciRun + 3, ciRun + codeOffset!!)
+            assertEquals("CI run $ciRun must use run number plus 4", ciRun + 4, ciRun + codeOffset!!)
         }
     }
 
