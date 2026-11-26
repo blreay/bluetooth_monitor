@@ -18,8 +18,8 @@
 - [x] 设计/执行范围审核通过，核验原1.1并新增构建目录外备份。
 - [x] Task1：独立日志core、文件writer及Android存储适配。
 - [x] Task2：瞬时手动反馈与全部实际启动/扫描/开关日志接线。
-- [ ] Task3：1.2身份、README、任务和整体审查。
-- [ ] Task4：父fresh完整构建、实际APK/原文件保留核验、交付和Git推送。
+- [x] Task3：1.2身份、README、任务和整体审查。
+- [x] Task4：父fresh完整构建、实际APK/原文件保留核验、交付和Git推送。
 
 ## 文件边界与接口
 
@@ -106,8 +106,8 @@ Expected：编译成功，实际行为断言失败。独立保存RED XML/日志�
 
 **Modify:** `app/build.gradle.kts`、`AppIdentityBoundaryTest.kt`、`README.md`、本执行记录和设计状态。
 
-- [ ] **1. 版本行为/source RED。** 修改现有两项1.1/+2测试为1.2/+3，保留全部signer/生产依赖/namespace/SDK守卫，先实际测试断言失败。
-- [ ] **2. 最小版本变更。**
+- [x] **1. 版本行为/source RED。** 修改现有两项1.1/+2测试为1.2/+3，保留全部signer/生产依赖/namespace/SDK守卫，先实际测试断言失败。
+- [x] **2. 最小版本变更。**
 
 ```kotlin
 // Version 1.2 uses local code 3, or the CI run number plus 3,
@@ -117,14 +117,14 @@ val autoVersionCode: Int = (ciRunNumber ?: 0) + 3
 versionName = "1.2"
 ```
 
-- [ ] **3. README。** 更新当前源码/安装为1.2，ON/OFF消息、扫描结果保留、所有文件授权路径和后台不抢前台、根路径/3MiB/1MiB/字节行边界、内部有限暂存/失败/异步强杀边界、日志公开MAC隐私、主进程vsRPC与计数不由日志决定。保留原1.0失败、原1.1历史实际交付数据；实际新artifact数据仅在父核验后写。
-- [ ] **4. GREEN、缺私密配置debug/tests及release fail-closed。** 实际临时不存在BT_NOGUI_SIGNING_PROPERTIES完整test/debug/lint应成功；同缺失配置`assembleRelease`应在validateNoguiReleaseSigning明确失败，此为expected拒绝而非通过release或行为RED。不读取签名文件，不另造私钥作测试，wrong cert仅保留原source契约并最终检查真实正确证书。
-- [ ] **5. 规格、质量和最终整体源码审查。** 各任务完整diff/new files及实际Android接线、原安全回归/私钥边界都审查。重要缺陷实际确认后同implementer红绿修正、同reviewer复审；无剩余重要缺陷才交父release门。
+- [x] **3. README。** 更新当前源码/安装为1.2，ON/OFF消息、扫描结果保留、所有文件授权路径和后台不抢前台、根路径/3MiB/1MiB/字节行边界、内部有限暂存/失败/异步强杀边界、日志公开MAC隐私、主进程vsRPC与计数不由日志决定。保留原1.0失败、原1.1历史实际交付数据；实际新artifact数据仅在父核验后写。
+- [x] **4. GREEN、缺私密配置debug/tests及release fail-closed。** 实际临时不存在BT_NOGUI_SIGNING_PROPERTIES完整test/debug/lint应成功；同缺失配置`assembleRelease`应在validateNoguiReleaseSigning明确失败，此为expected拒绝而非通过release或行为RED。不读取签名文件，不另造私钥作测试，wrong cert仅保留原source契约并最终检查真实正确证书。
+- [x] **5. 规格、质量和最终整体源码审查。** 各任务完整diff/new files及实际Android接线、原安全回归/私钥边界都审查。重要缺陷实际确认后同implementer红绿修正、同reviewer复审；无剩余重要缺陷才交父release门。
 
 ## Task4：父fresh构建、公开artifact验证及Git交付
 
-- [ ] **1. 查看最终diff和scope。** 未改main/旧GUI/CI/wrapper/私密输入；原安全协议、295项baseline保留。核验原1.1持久及额外tmp副本的exact hash仍不变。
-- [ ] **2. 两次完整强制重跑。**
+- [x] **1. 查看最终diff和scope。** 未改main/旧GUI/CI/wrapper/私密输入；原安全协议、295项baseline保留。核验原1.1持久及额外tmp副本的exact hash仍不变。
+- [x] **2. 两次完整强制重跑。**
 
 ```bash
 source /home/admin/.cache/btreset-build/env.sh
@@ -135,10 +135,10 @@ source /home/admin/.cache/btreset-build/env.sh
 
 实际读取JUnit XML、计数、failure/error/skipped和lint XML。记录新增ScopedStorage等权限政策warning，不添加无证据抑制、不称lint-clean，要求没有新增MissingPermission/Error；target32 Fatal按实际披露。每次成功release先保存输出目录外临时副本，防止下一次AGP清理。
 
-- [ ] **3. 创建本次公开verifier。** 用native Write创建`/tmp/bt-nogui-1.2-verification.py`，输入实际持久1.1，不复用硬编码缺失1.0的旧preservation门。aapt badging/xmltree检查同包、1.2/code3、min31/target32、NoDisplay完整launcher、RUN/RESET_IF_PRESENT、内部PermissionActivity/ResetService/ReEnable/HistoryDismiss、MANAGE_EXTERNAL_STORAGE、无WRITE/boot/INTERNET。apksigner检查单一signer固定7825cc并与实际1.1一致；DEX日志/feedback/newruntime类存在；所有baseline suite数量不减少、新pure行为suite存在。
-- [ ] **4. 复制并重验交付。** 最终第二份release保存为`/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.2.apk`和`app/build/outputs/apk/release/bt-monitor-nogui-1.2.apk`。目标不存在用exclusive create；已存在先检查，如果不同拒绝未知覆写。复制后metadata、size、hash核验。同原1.1持久input重新检查，必要时只从核验副本恢复原1.1输出文件，不把重编旧版当保存成功。
-- [ ] **5. adb可用性与边界。** `adb devices -l`有已授权设备才做覆盖安装数据保留、所有文件设置授权/撤销、根日志与实际裁剪、循环启动及Toast/扫码/高权限fallback/通知历史。无设备则逐项标未执行，不以JVM和aapt冒充真机。
-- [ ] **6. 最终数据文档、attributed commit/push。** 按allowlist stage，核查无APK/私钥/cache进入git。提交末行`Co-Authored-By: Claude Code <noreply@anthropic.com>`，仅`origin bluetooth_monitor_shizuku_nogui` push、`ls-remote`与本地SHA一致、clean tree。更新执行记录并单独docs commit如需，不amend/force-push。交付新APK持久路径、版本、同签覆盖条件、授权使用步骤、真实tests/lint和无设备项。
+- [x] **3. 创建本次公开verifier。** 用native Write创建`/tmp/bt-nogui-1.2-verification.py`，输入实际持久1.1，不复用硬编码缺失1.0的旧preservation门。aapt badging/xmltree检查同包、1.2/code3、min31/target32、NoDisplay完整launcher、RUN/RESET_IF_PRESENT、内部PermissionActivity/ResetService/ReEnable/HistoryDismiss、MANAGE_EXTERNAL_STORAGE、无WRITE/boot/INTERNET。apksigner检查单一signer固定7825cc并与实际1.1一致；DEX日志/feedback/newruntime类存在；所有baseline suite数量不减少、新pure行为suite存在。
+- [x] **4. 复制并重验交付。** 最终第二份release保存为`/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.2.apk`和`app/build/outputs/apk/release/bt-monitor-nogui-1.2.apk`。目标不存在用exclusive create；已存在先检查，如果不同拒绝未知覆写。复制后metadata、size、hash核验。同原1.1持久input重新检查，必要时只从核验副本恢复原1.1输出文件，不把重编旧版当保存成功。
+- [x] **5. adb可用性与边界。** `adb devices -l`有已授权设备才做覆盖安装数据保留、所有文件设置授权/撤销、根日志与实际裁剪、循环启动及Toast/扫码/高权限fallback/通知历史。无设备则逐项标未执行，不以JVM和aapt冒充真机。
+- [x] **6. 最终数据文档、attributed commit/push。** 按allowlist stage，核查无APK/私钥/cache进入git。提交末行`Co-Authored-By: Claude Code <noreply@anthropic.com>`，仅`origin bluetooth_monitor_shizuku_nogui` push、`ls-remote`与本地SHA一致、clean tree。更新执行记录并单独docs commit如需，不amend/force-push。交付新APK持久路径、版本、同签覆盖条件、授权使用步骤、真实tests/lint和无设备项。
 
 ## 完整无release验证命令
 
@@ -207,4 +207,4 @@ Task2实现代理已DONE/frozen，父实际核对13个tracked生产修改（mani
 
 最终交付第二份：`/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.2.apk`及`app/build/outputs/apk/release/bt-monitor-nogui-1.2.apk`，2652533字节、APK SHA256`60cfa2fffcc65ae6ad1197855a27e02dde23e1b22fd79211f65872bc0f3d497d`，包名`com.blreay.bluetoothmonitor.nogui`，1.2/code3，单一证书SHA256`7825ccfb3eb4fa47d7bd87ff70c82800fb0801d67907c69d2825f6c2bb492c9a`。复制后每份metadata/size/hash/signature重验。实际原1.1持久和额外备份仍为原2542237字节/hash`2e429826fd80af4bcecc17fa142ca81eb39c9a57ddefa353f6a0fde19eff7960`；原1.1输出副本只从原文件恢复并重验，不重编冒充。符合实际1.1/code2→1.2/code3同包同证书覆盖身份条件，不声称真机已保留数据/权限。Manifest/DEX确认完整NoDisplay launcher、RUN/RESET_IF_PRESENT、保护内部组件/connectedDevice FGS/Shizuku provider、all-files权限、无WRITE/INTERNET/boot及日志/feedback/runtime类。历史1.0遗失失败不改写。
 
-最终adb devices -l为空，真机覆盖安装/数据和权限保留、所有文件授权拒绝/撤销/恢复、真实共享根写入与裁剪、fooView循环热启动、Toast显示、BLE/Shizuku/普通后备/OEM、通知历史/累计现场验收逐项未执行。临时目录JVM滚动/异常测试与compiled APK检查不能替代这些项。父只补实际交付数据文档，不修改冻结生产/测试源码；当前分支提交/推送与远端SHA/clean-tree核验随后完成。
+最终adb devices -l为空，真机覆盖安装/数据和权限保留、所有文件授权拒绝/撤销/恢复、真实共享根写入与裁剪、fooView循环热启动、Toast显示、BLE/Shizuku/普通后备/OEM、通知历史/累计现场验收逐项未执行。临时目录JVM滚动/异常测试与compiled APK检查不能替代这些项。父只补实际交付数据文档，不修改冻结生产/测试源码。按五文件allowlist提交版本/README和实际证据为`89f9ba460997090e0bcea123db4d98e065f298fc`，attribution末行保留；仅push当前`bluetooth_monitor_shizuku_nogui`成功，ls-remote与本地89f9ba4完全一致，工作树干净。未提交APK/私钥/cache，未改main/旧GUI/CI/wrapper、未PR/发布workflow/替换rolling latest。Task3/Task4及全部子步骤完成（设备项为已检查无设备并明确未执行，不是真机通过）；本完成状态文档另行同分支docs提交，之后再次核验远端SHA与clean tree。
