@@ -172,7 +172,7 @@ MIUI/HyperOS 可按需设置：
 
 ### 已验证的 1.0 历史交付
 
-**以下原 1.0 文件丢失发生于当时的 1.1 release 构建；本节的「本次」指那次 1.1 交付，不是正在实施的 1.3。原文件保留失败的历史结论不变。**
+**以下原 1.0 文件丢失发生于当时的 1.1 release 构建；本节的「本次」指那次 1.1 交付，不是本次 1.3 交付。原文件保留失败的历史结论不变。**
 
 原 **`bt-monitor-nogui.apk`** 是已交付的后台 **1.0/code 1**，不是当前 1.3 产物。以下为原文件在本次构建前实测的历史数据。**本次 release 打包清理了构建输出目录，旧命名文件缺失；可访问的公开产物/缓存目录中未找到备份，原文件保存这项未完成，也无法再做本次原文件并排重验。** 历史路径：
 
@@ -236,11 +236,29 @@ Lint实测 **14项：13 Warning、1 Fatal `ExpiredTargetSdkVersion`，MissingPer
 
 最终`adb devices -l`为空。**真机覆盖安装和数据/权限保留、日志设置授权/拒绝/撤销/恢复、真实根文件写入/裁剪、fooView重复热启动、Toast显示、BLE、Shizuku/普通后备与OEM交互、通知历史/累计现场验收均未执行**。JVM/source契约、临时目录存储测试和APK元数据验证不替代真机步骤。
 
-### 1.3 当前验证与待交付边界
+### 已验证的 1.3 产物与验收边界
 
-1.3 的实际签名 APK、hash/大小与新旧原文件并排核验完成后再补充，不用重编旧版本冒充保留，也不沿用 1.2 的产物数据。当前已知 lint 基线为 **14 项：13 Warning、1 Fatal `ExpiredTargetSdkVersion`，MissingPermission 0 / Error 0**（包括 `ScopedStorage`），不是 lint-clean；原三个通知 setter 弃用编译 warning 仍保留。
+2026-11-27，最终第二份签名 release 已复制到以下两处，并逐份重新核验实际 APK：
 
-**1.3 真机覆盖升级与数据/权限保留、真实 BLE、Toast 送达、窄屏/大字体按钮布局、日志权限与根文件读写、Shizuku/普通后备及 OEM 交互均未执行验收。** JVM/source 契约、临时目录存储测试和 debug 构建不替代这些步骤；最终验收须以实际执行证据为准。
+```text
+持久文件: /home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.3.apk
+输出副本: app/build/outputs/apk/release/bt-monitor-nogui-1.3.apk
+包名: com.blreay.bluetoothmonitor.nogui
+版本: 1.3 / versionCode 4
+大小: 2621153 字节
+APK SHA-256: 208170e2dc9567f48c0f539587dc59d0fe857e02d7e85134b764929ac5dee16b
+证书 SHA-256: 7825ccfb3eb4fa47d7bd87ff70c82800fb0801d67907c69d2825f6c2bb492c9a
+```
+
+父会话在最终整体源码审查通过后，两次完整强制重跑 test/debug/release/lint：每次17秒、97任务全部执行，均为 **28 suite、424项 JVM 测试，零失败/错误/跳过**。冻结契约覆盖88个生产/测试/资源/build/CI路径及全部424个准确测试名称，不只检查总数。两次签名均为同一原7825cc证书；第一份APK先独占保存到构建目录外并在第二次构建后重验，hash为`0ec4d1afdbb955ca0ebf69a5eb5fae0a36c3854051926b08eb238fdf86dabb5d`，APK字节不要求可复现。两项任务的规格、质量及最终整体源码审查均通过；缺签名配置时release明确拒绝的独立验证不冒充成功打包。
+
+实际原1.2/code3持久文件与额外备份仍是上述2652533字节/原60cfa2 hash；原1.1/code2也保持原字节/hash，两份旧输出副本仅从实际原文件恢复，没有重编旧版冒充保留。实际新旧包名和单一证书一致、code3→4，**已核验符合覆盖升级身份条件**，不是已经在手机上完成升级。
+
+实际APK核验包括完整NoDisplay launcher、RUN/RESET_IF_PRESENT、内部Activity/service/receiver、connectedDevice FGS、Shizuku provider、SDK31/32/34、MANAGE_EXTERNAL_STORAGE、无WRITE/INTERNET/boot，以及28个必需DEX类的真实定义；新typed/summary/feedback/runtime组件存在，退役`AuditRow`和`LogDropRange`定义不存在。日志与反馈仍不替代原安全权威和计数事务。
+
+Lint实测仍为 **14项：13 Warning、1 Fatal `ExpiredTargetSdkVersion`，MissingPermission0/Error0**（包括`ScopedStorage`），不是lint-clean；三个原通知setter弃用及`ManualOperationController`冗余initializer编译warning如实保留。
+
+本次`adb devices -l`为空。**1.3 真机覆盖升级与数据/权限保留、真实 BLE、Toast 送达、窄屏/大字体按钮布局、日志权限授权/撤销/恢复与根文件写入/裁剪、fooView热启动、Shizuku/普通后备及 OEM 交互、通知历史/累计均未执行现场验收。** JVM/source契约、临时目录存储测试及签名APK检查不替代这些步骤。
 
 ### 构建与私密签名
 
@@ -285,10 +303,12 @@ BT_NOGUI_SIGNING_PROPERTIES="$missing_signing_dir/signing.properties" \
 
 共享构建主机发生资源压力时，可仅对当前命令追加 `--max-workers=2 --no-parallel`，或通过临时 `GRADLE_OPTS` 限制并发；不改变测试断言、5秒 JVM fixture 或生产超时。默认并发下曾出现两次原有 JVM fixture 超时，临时限流的完整重跑通过；这支持环境压力假说，但没有证明原始根因，详见验证记录。
 
-源码 `versionName=1.3`，`autoVersionCode=(ciRunNumber ?: 0)+4`：本地默认 **code 4**，CI 使用 **`GITHUB_RUN_NUMBER+4`**，保留原有 nullable CI 递增约定。实际产物核验后，同包同证书、code 3→4 才符合升级已交付后台 **1.2/code 3** 的身份条件（也保持 1.1/code 2、1.0/code 1 的身份兼容条件），不代表真机升级已通过；如果已安装的是更高 code 的 CI 产物，应使用不低于该 code 的同签名构建，而非用本地 code 4 降级。源码 namespace、中文后台 label、min31/target32/compile34、生产依赖、UserService version 1 及固定 AIDL 方法/事务 ID 均不随此次轻量日志升级改变。旧 GUI 独立包的版本号不影响本包。
+源码 `versionName=1.3`，`autoVersionCode=(ciRunNumber ?: 0)+4`：本地默认 **code 4**，CI 使用 **`GITHUB_RUN_NUMBER+4`**，保留原有 nullable CI 递增约定。本次实际1.3产物已核验同包同证书、code 3→4，符合升级已交付后台 **1.2/code 3** 的身份条件（也保持 1.1/code 2、1.0/code 1 的身份兼容条件），不代表真机升级已通过；如果已安装的是更高 code 的 CI 产物，应使用不低于该 code 的同签名构建，而非用本地 code 4 降级。源码 namespace、中文后台 label、min31/target32/compile34、生产依赖、UserService version 1 及固定 AIDL 方法/事务 ID 均不随此次轻量日志升级改变。旧 GUI 独立包的版本号不影响本包。
 
 设计与实际验证记录：
 
+- [1.3紧凑日志与横排按钮设计](docs/superpowers/specs/2026-11-27-compact-log-ui-design.md)
+- [1.3实施、验证与交付记录](docs/superpowers/plans/2026-11-27-compact-log-ui.md)
 - [1.2开关消息与滚动日志设计](docs/superpowers/specs/2026-11-26-miband-log-design.md)
 - [1.2实施、验证与交付记录](docs/superpowers/plans/2026-11-26-miband-log.md)
 - [1.1详情控制与累计历史设计](docs/superpowers/specs/2026-11-25-details-controls-history-design.md)
