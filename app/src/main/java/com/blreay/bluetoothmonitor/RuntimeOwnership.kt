@@ -139,6 +139,7 @@ class ScanRegistrationRetirement(
     private val clock: () -> Long,
     private val enqueue: (() -> Unit) -> Boolean,
     private val onRetired: (Ticket) -> Unit = {},
+    private val audit: AuditSink = AuditSink.NONE,
     private val onFailure: (Ticket, String) -> Unit,
 ) {
     data class Ticket(val runId: String, val serial: Long)
@@ -155,9 +156,15 @@ class ScanRegistrationRetirement(
     )
     private var serial = 0L
     private var slot: Slot? = null
+    private fun event(name: String, ticket: Ticket, vararg fields: Pair<String, Any?>, at: Long? = null) {
+        audit.event(name, "runId" to ticket.runId, "serial" to ticket.serial, *fields, at = at)
+    }
     @Synchronized fun claim(runId: String, stop: () -> Boolean): Ticket? {
-        if (slot != null) return null
-        return Ticket(runId, ++serial).also { slot = Slot(it, stop) }
+        if (slot != null) {
+            audit.event("ble.ticket.refused", "runId" to runId, "reason" to "exact scanner slot occupied")
+            return null
+        }
+        return Ticket(runId, ++serial).also { slot = Slot(it, stop); event("ble.ticket", it) }
     }
     @Synchronized fun blocked() = slot != null
     @Synchronized fun unresolved(ticket: Ticket) = slot?.ticket == ticket
@@ -171,7 +178,10 @@ class ScanRegistrationRetirement(
             if (current.started || current.retiring) return false
             current.started = true // atomic against retire-before-entry; prevents late queued native start
         }
+        event("ble.registration.entry", ticket, at = System.currentTimeMillis())
         val started = try { operation() } catch (_: Exception) { false }
+        val returnedAt = System.currentTimeMillis()
+        event("ble.registration.return", ticket, "started" to started, "registrationRetired" to false, at = returnedAt)
         synchronized(this) {
             val current = slot?.takeIf { it.ticket == ticket } ?: return started
             current.startReturned = true
@@ -185,6 +195,7 @@ class ScanRegistrationRetirement(
     }
 
     fun retire(ticket: Ticket): Boolean {
+        event("ble.retirement.request", ticket, "registrationRetired" to false)
         val neverEntered = synchronized(this) {
             val current = slot?.takeIf { it.ticket == ticket } ?: return false
             if (!current.retiring) { current.retiring = true; current.retiredAt = clock() }
@@ -193,7 +204,10 @@ class ScanRegistrationRetirement(
                 true
             } else false
         }
-        if (neverEntered) onRetired(ticket) else schedule(ticket)
+        if (neverEntered) {
+            event("ble.retired", ticket, "registrationRetired" to true, "proof" to "exact ticket retired before native entry", at = System.currentTimeMillis())
+            onRetired(ticket)
+        } else schedule(ticket)
         return true
     }
 
@@ -222,6 +236,7 @@ class ScanRegistrationRetirement(
                 current.queued = false
                 current.failed = true
             }
+            event("ble.retirement.failed", ticket, "registrationRetired" to false, "reason" to "cleanup queue refused; authority unknown")
             onFailure(ticket, "扫描清理队列拒绝；旧注册结束未确认，不允许叠加新扫描")
         }
     }
@@ -233,14 +248,22 @@ class ScanRegistrationRetirement(
             current.running = true
             current.stop
         }
+        event("ble.cleanup.entry", ticket, at = System.currentTimeMillis())
         val stopped = try { stop() } catch (_: Exception) { false }
+        val returnedAt = System.currentTimeMillis()
+        event("ble.cleanup.return", ticket, "stopped" to stopped, at = returnedAt)
         synchronized(this) {
             val current = slot?.takeIf { it.ticket == ticket } ?: return
             current.running = false
             if (stopped) slot = null else current.failed = true
         }
-        if (stopped) onRetired(ticket)
-        else onFailure(ticket, "stopScan 清理失败/权限变化；旧注册结束未确认，恢复权限后重新启动图标只重试清理")
+        if (stopped) {
+            event("ble.retired", ticket, "registrationRetired" to true, "proof" to "exact stop returned true", at = returnedAt)
+            onRetired(ticket)
+        } else {
+            event("ble.retirement.failed", ticket, "registrationRetired" to false, "reason" to "exact stop failed; authority unknown", at = returnedAt)
+            onFailure(ticket, "stopScan 清理失败/权限变化；旧注册结束未确认，恢复权限后重新启动图标只重试清理")
+        }
     }
 }
 
@@ -260,6 +283,7 @@ class ManualObservationWindow {
     @Synchronized fun captureEntry(elapsedNanos: Long) {
         if (enteredElapsedNanos == null && elapsedNanos >= 0L) enteredElapsedNanos = elapsedNanos
     }
+    fun capturedEntryElapsedNanos(): Long? = enteredElapsedNanos // diagnostic observation only; never advances the window
     fun admit(sampledElapsedNanos: Long, receivedElapsedNanos: Long, deliveredElapsedNanos: Long, expire: () -> Unit): Boolean {
         val entry = enteredElapsedNanos ?: return false
         if (remaining(deliveredElapsedNanos, expire) == null) return false

@@ -17,7 +17,7 @@
 - [x] 只读探索与唯一真实业务选择：用户选择所有文件访问。
 - [x] 设计/执行范围审核通过，核验原1.1并新增构建目录外备份。
 - [x] Task1：独立日志core、文件writer及Android存储适配。
-- [ ] Task2：瞬时手动反馈与全部实际启动/扫描/开关日志接线。
+- [x] Task2：瞬时手动反馈与全部实际启动/扫描/开关日志接线。
 - [ ] Task3：1.2身份、README、任务和整体审查。
 - [ ] Task4：父fresh完整构建、实际APK/原文件保留核验、交付和Git推送。
 
@@ -31,6 +31,7 @@
 - `MibandLog.kt`（新）：主应用singleton Android adapter，lazy后台文件定位与special-access检测、Application Context、独立executor、immutable状态读/显式refresh；不启动Activity。
 - `LogStatusNotification.kt`（新）：独立静默日志状态通知（新ID105/独立渠道），direct immutable PermissionActivity PI，不改变历史/自动通知，不由日志错误触发新的蓝牙动作。
 - `ManualFeedback.kt`（新）：不持久的feedback类型/去重器，ON/OFF接纳、拒绝、真正终态、保存失败和未知事件；不根据snapshot重新推断结果。
+- Task2可新增单一小型`RuntimeAudit.kt`观察helper以支持真实生产路径的callback身份/时间测试，不能实现第二套策略；如包装SwitchBackend必须完整转发六个port及原Observed invocation，不把新增日志当有状态BackendEntry插入checked历史。可见cached日志状态的最小adapter观察接线可修改`MibandLog.kt`，但优先使用生命周期受控的cache重绘，不重构已审查core。
 - Task2修改已存在的`PermissionActivity.kt`、`ManualOperationController.kt`、`ResetCoordinator.kt`、`MonitorApplication.kt`、`MainActivity.kt`、`BandResetController.kt`、`ManualBleScanner.kt`、`TriggerReceiver.kt`、`ReEnableReceiver.kt`、`ResetService.kt`、`app/src/main/AndroidManifest.xml`。如增加engine/retirement观察事件，仅修改`DurableResetEngine.kt`/`RuntimeOwnership.kt`的观察接线，不改变原安全状态迁移。`Notifier.always`现有实现复用。
 - Task3仅版本/说明：`app/build.gradle.kts`、`AppIdentityBoundaryTest.kt`、`README.md`和本设计/执行记录。
 
@@ -87,19 +88,19 @@ Expected：编译成功，实际行为断言失败。独立保存RED XML/日志�
 
 **Create:** `ManualFeedback.kt`、`ManualFeedbackTest.kt`、`RuntimeAuditTest.kt`。**Modify/Test:** 文件边界列出的runtime/UI/manifest，以及`DetailsSnapshotTest.kt`、`ManualSourceBoundaryTest.kt`、`ScanLifetimeTest.kt`/现有ScanRetirement suite的必要生产seam断言。保持原295项baseline不减少。
 
-- [ ] **1. 先写feedback与观察sink红测。** controller新默认参数`feedback: (ManualFeedback) -> Unit = {}`、`audit: AuditSink = AuditSink.NONE`保留原构造调用兼容。反馈包含action/operationId/类型/状态/关键原因/实际mode和observedState；去重按同操作同类反馈，拒绝每次独立发送，不从旧store或snapshot初始化发送。实际观察到ON/OFF且store完成成功才发成功；SUBMITTED/未知/保存失败不可发成功。前台接管失败、冲突、权限缺失、迟到真实结束、窗口结束未知、反复Service回调、close/recreate不重播全部可执行测试。
+- [x] **1. 先写feedback与观察sink红测。** controller新默认参数`feedback: (ManualFeedback) -> Unit = {}`、`audit: AuditSink = AuditSink.NONE`保留原构造调用兼容。反馈包含action/operationId/类型/状态/关键原因/实际mode和observedState；去重按同操作同类反馈，拒绝每次独立发送，不从旧store或snapshot初始化发送。实际观察到ON/OFF且store完成成功才发成功；SUBMITTED/未知/保存失败不可发成功。前台接管失败、冲突、权限缺失、迟到真实结束、窗口结束未知、反复Service回调、close/recreate不重播全部可执行测试。
 
-- [ ] **2. controller实际接线。** 在request ingress记录日志（即使拒绝），accepted/reject、dispatch、每次backend/entered/新command/result、sample、scan事件、quarantine和finish边界记录。`at`使用existing worker元数据；fallback commandId使用当前变更后的变量。feedback/sink异常全部隔离，失败不让checked事务被当成功，也不释放native/scanner/lease。ON/OFF消息由coordinator调用`Notifier.always(app, conciseMessage)`；SCAN仍保留结果区，不每个设备弹Toast。
+- [x] **2. controller实际接线。** 在request ingress记录日志（即使拒绝），accepted/reject、dispatch、每次backend/entered/新command/result、sample、scan事件、quarantine和finish边界记录。`at`使用existing worker元数据；fallback commandId使用当前变更后的变量。feedback/sink异常全部隔离，失败不让checked事务被当成功，也不释放native/scanner/lease。ON/OFF消息由coordinator调用`Notifier.always(app, conciseMessage)`；SCAN仍保留结果区，不每个设备弹Toast。
 
-- [ ] **3. UI红绿与所有文件设置。** 删除`manualBodies[ManualAction.ON] = text()`和OFF等价行，仅SCAN进入结果map，保留内部renderer/持久结果。新独立日志状态TextView与授权Button，状态来自immutable `MibandLog.status()`。Button仅点击时启动本包`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`；缺失页面fallback `ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION`，失败Toast。onResume显示实际权限检查结果并触发后台flush，不自动重放蓝牙按钮/启动扫描，不自动打开页面。异步flush完成后，即使没有蓝牙callback也须更新可见日志状态：使用单一生命周期受控的cached状态重绘或合并的状态观察回调，stop/destroy取消；不在此更新中调用文件I/O、周期refreshAccess或扫描。Manifest只新增MANAGE_EXTERNAL_STORAGE，不加WRITE/legacy/INTERNET/boot。
+- [x] **3. UI红绿与所有文件设置。** 删除`manualBodies[ManualAction.ON] = text()`和OFF等价行，仅SCAN进入结果map，保留内部renderer/持久结果。新独立日志状态TextView与授权Button，状态来自immutable `MibandLog.status()`。Button仅点击时启动本包`ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`；缺失页面fallback `ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION`，失败Toast。onResume显示实际权限检查结果并触发后台flush，不自动重放蓝牙按钮/启动扫描，不自动打开页面。异步flush完成后，即使没有蓝牙callback也须更新可见日志状态：使用单一生命周期受控的cached状态重绘或合并的状态观察回调，stop/destroy取消；不在此更新中调用文件I/O、周期refreshAccess或扫描。Manifest只新增MANAGE_EXTERNAL_STORAGE，不加WRITE/legacy/INTERNET/boot。
 
-- [ ] **4. 主进程与每次真实入口。** `MonitorApplication.onCreate`保持UID0/2000及非主进程guard，日志初始化/`process.start`在coordinator构造之前。`MainActivity.onCreate`记录实际action/component（没有任意extras）和新requestId，保持dispatch+finish/NoDisplay。coordinator每次launch/broadcast/recovery/service入口及拒绝/accept/复用记录；不能只在成功分配run后才打日志，不把MAIN来源伪称fooView。
+- [x] **4. 主进程与每次真实入口。** `MonitorApplication.onCreate`保持UID0/2000及非主进程guard，日志初始化/`process.start`在coordinator构造之前。`MainActivity.onCreate`记录实际action/component（没有任意extras）和新requestId，保持dispatch+finish/NoDisplay。coordinator每次launch/broadcast/recovery/service入口及拒绝/accept/复用记录；不能只在成功分配run后才打日志，不把MAIN来源伪称fooView。
 
-- [ ] **5. 自动和手动扫描真实事件。** run/prepare、确切ticket、worker startScan真实入口/返回、通过现有准入的广告名/MAC/RSSI、sample/received/delivered时间、target claim、结果/取消/失败、retirement request和确切确认/失败。Manual callback捕获wall时间（batch共享receipt），保留原`AdvertisementDelivery`和8秒`ManualObservationWindow`准入；日志不能延长窗口或新增native调用。自动claim仍先于teardown，accepted匹配才arm。cleanup confirmed只接真正retirement callback；failure/timeout只说明未知。
+- [x] **5. 自动和手动扫描真实事件。** run/prepare、确切ticket、worker startScan真实入口/返回、通过现有准入的广告名/MAC/RSSI、sample/received/delivered时间、target claim、结果/取消/失败、retirement request和确切确认/失败。Manual callback捕获wall时间（batch共享receipt），保留原`AdvertisementDelivery`和8秒`ManualObservationWindow`准入；日志不能延长窗口或新增native调用。自动claim仍先于teardown，accepted匹配才arm。cleanup confirmed只接真正retirement callback；failure/timeout只说明未知。
 
-- [ ] **6. 开关与恢复。** coordinator driver调用记录请求、actual backend尝试、当前command entry/outcome、native-ended与submitted分别标注、每个sample、engine决策/terminal checked结果。普通API和BinderRPC的现有worker捕获时间保留；不为获取svc spawn时间改AIDL/固定argv/runner。首次Shizuku能力、授权、连接问题记录actual reason。automatic count只读原checked结果作日志，禁止计数从logger成功/notification推算。
+- [x] **6. 开关与恢复。** coordinator driver调用记录请求、actual backend尝试、当前command entry/outcome、native-ended与submitted分别标注、每个sample、engine决策/terminal checked结果。普通API和BinderRPC的现有worker捕获时间保留；不为获取svc spawn时间改AIDL/固定argv/runner。首次Shizuku能力、授权、连接问题记录actual reason。automatic count只读原checked结果作日志，禁止计数从logger成功/notification推算。
 
-- [ ] **7. 实际运行seam红绿和完整回归。** fake sink抛Exception应不改变driver/engine/manual/native/scan行为；重复启动、拒绝、双方向/普通后备、SCAN只展示和8秒deadline、exact cleanup及command身份顺序可执行。source contract补充所有文件权限的唯一可见申请入口、只SCAN结果map、真实sink注入及startup在guard之后；不能用source检查替代纯行为测试。单一Gradle owner，规格→质量→父fresh无release完整命令。
+- [x] **7. 实际运行seam红绿和完整回归。** fake sink抛Exception应不改变driver/engine/manual/native/scan行为；重复启动、拒绝、双方向/普通后备、SCAN只展示和8秒deadline、exact cleanup及command身份顺序可执行。source contract补充所有文件权限的唯一可见申请入口、只SCAN结果map、真实sink注入及startup在guard之后；不能用source检查替代纯行为测试。单一Gradle owner，规格→质量→父fresh无release完整命令。
 
 ## Task3：1.2升级身份、文档和整体审查
 
@@ -178,4 +179,16 @@ Task1实现代理仅创建5个新日志生产文件和4个新测试文件。父�
 
 同实现代理仅修改AuditLog/AuditLogTest并冻结：event入口在map插入/hash之前先检查key.length>96，最多访问前32个输入slot；忽略超长key/字段溢出的marker在重复key和32项边界仍明确，capture的escaped-byte规则不变。父实际核验`quality-key-bound/red/gradle.log`与`red/xml`：编译成功、23项/4个AssertionError失败、0错误/跳过；代理聚焦GREEN23项通过，完整日志和XML报告26suite372项零失败/错误/跳过（原295+原Task1全部73+4回归）。
 
-同独立质量审查代理直接重新读取实际两文件返回APPROVED：原Important关闭，无新Critical/Important；未自动委派或执行构建，原Minor仍非阻塞。父随后独立完整test/debug/lint强制重跑成功：50秒、73任务全执行，日志`/tmp/btreset-1.2-task1-parent-key-fix-full.log`，实际26suite372项零失败/错误/跳过（Audit23、Rolling20、Writer11、Storage23），生成报告另存`/tmp/btreset-1.2-task1-parent-key-fix-bkrhm6z9`。lint仍13项Warning12/Fatal1（ExpiredTargetSdkVersion），MissingPermission0/Error0；非lint-clean。父再次实际核验原1.1持久/额外备份未变，报告`/tmp/btreset-1.2-task1-key-fix-baseline.json`，diff-check通过。Task1规格/质量和父独立回归门均通过，已标完成；后续Task2接入生产，当前仍未生成新1.2 release。
+同独立质量审查代理直接重新读取实际两文件返回APPROVED：原Important关闭，无新Critical/Important；未自动委派或执行构建，原Minor仍非阻塞。父随后独立完整test/debug/lint强制重跑成功：50秒、73任务全执行，日志`/tmp/btreset-1.2-task1-parent-key-fix-full.log`，实际26suite372项零失败/错误/跳过（Audit23、Rolling20、Writer11、Storage23），生成报告另存`/tmp/btreset-1.2-task1-parent-key-fix-bkrhm6z9`。lint仍13项Warning12/Fatal1（ExpiredTargetSdkVersion），MissingPermission0/Error0；非lint-clean。父再次实际核验原1.1持久/额外备份未变，报告`/tmp/btreset-1.2-task1-key-fix-baseline.json`，diff-check通过。Task1规格/质量和父独立回归门均通过，已标完成。父按明确allowlist提交Task1日志文件/测试及证据记录，提交`058c605fd39e137bc02d258bd3d408268143e8dc`，attribution末行已核验，未push。随后以该clean baseline启动单一Task2实现代理接入生产；父只更新文档/公开verifier，不并行修改runtime或执行Gradle。当前仍未生成新1.2 release。
+
+### Task2冻结、证据分类与父独立首次回归
+
+Task2实现代理已DONE/frozen，父实际核对13个tracked生产修改（manifest/UI/controller/coordinator/入口/scan/engine/retirement）和2新生产ManualFeedback/RuntimeAudit、2新测试；Task1 core、原372测试/26suite、版本/identity/build/README均未改，父计划修改另行保留。实现代理报告消息真实边界接线、ON/OFF结果区移除/SCAN保留、可见显式所有文件设置、单一visible cached状态每秒重绘且stop/destroy取消、各实际入口/扫描/开关/退役与checked终态日志；这些仍待独立规格/质量核验，不仅凭实现报告确认符合。
+
+父检查保存的compile-success RED日志与XML：初始`/home/admin/.cache/btreset-task2-red.log`及`btreset-task2-red-results`18项/17失败（13 AssertionError+4缺少事件/反馈的NoSuchElementException）；proof阶段`btreset-task2-red-proof.log`及结果12项/3失败，均为缺少事件的NoSuchElementException，不能称3个明确断言失败。advertisement阶段`btreset-task2-red-advertisement.log`及结果13项/2 AssertionError，其中一项是缺少广告接线，另一项为新测试delayed-Main fixture时钟意外相等；代理修正新fixture以真实模拟延迟，不把该fixture错误冒充生产缺陷，不放宽原fixture/assertion。上述均实际执行测试后失败，0错误/跳过，非compiler失败。
+
+代理最终完整日志`/home/admin/.cache/btreset-task2-full-final.log`报告22秒/73任务执行、28suite399项零失败/错误/跳过，新增Feedback11/RuntimeAudit16。父随后独立强制完整test/debug/lint成功：56秒/73任务全执行，日志`/tmp/btreset-1.2-task2-parent-full.log`；父读取本次28suite399项零失败/错误/跳过，完整报告另存`/tmp/btreset-1.2-task2-parent-zk83emsb`。lint实际14项Warning13/Fatal1，新增未抑制ScopedStorage（MANAGE_EXTERNAL_STORAGE），Fatal仍为原ExpiredTargetSdkVersion，MissingPermission0/Error0，不称lint-clean。父再次实际aapt/apksigner/hash核验原1.1持久及备份未变，报告`/tmp/btreset-1.2-task2-baseline-after-parent.json`，diff-check通过。Task2独立规格审查返回NOT PASS：1项Important，实际ManualFeedback.mode被capture但conciseMessage只拼action/reason，coordinator真正Toast调用此formatter；普通OFF和Shizuku-root OFF成功消息相同，未满足显示实际模式的约定。父读取ManualFeedback/controller真实观察完成边界/coordinatorNotifier接线确认，不仅凭DTO测试认为已满足。已交同Task2实现代理仅修改formatter/实际显示payload测试，unknown/accept/reject不能虚构路径，不改变checked终态。Minor：NoDisplay dispatcher创建有日志，launch同步返回/finish请求无对应观察；同时以最小MainActivity事件和RuntimeAudit源契约补充，finish请求不假称销毁/native结束。质量门尚未启动，399项通过不替代规格符合，Task2未标完成。
+
+### Task2规格修正冻结
+
+同实现代理仅修改ManualFeedback/ManualFeedbackTest/MainActivity/RuntimeAuditTest并冻结。父读取实际formatter确认known mode使用SwitchMode.label，null不虚构backend，NONE显示尚未切换/未调用开关；MainActivity实际dispatch-return在同步launch之后，finish-request在finish之前，recreation只记录skip。父解析保存的`/home/admin/.cache/btreset-task2-review-fix-red-results`：2suite31项/4 AssertionError，0错误/跳过；GREEN31项零失败，full-results28suite403项零失败/错误/跳过（Feedback14、RuntimeAudit17），原399项保留。本次实现代理完整日志`btreset-task2-review-fix-full.log`，父尚未独立重跑修正后的完整命令。同规格reviewer直接复审实际四文件和controller/coordinator/Notifier调用返回PASS：原Important实际模式消息和Minor分发观察均关闭，无新已验证Critical/Important；reviewer未运行构建，source-order测试不当Android执行证明。随后启动独立只读质量审查，禁止再次委派或使用自动fork技能。独立质量审查随后返回APPROVED，无已验证Critical/Important/Minor；实际读取完整13文件diff、4新文件及相邻authority实现，17项冻结hash匹配，未运行构建或再委派。父再独立完整test/debug/lint强制重跑：52秒/73任务全执行，`/tmp/btreset-1.2-task2-parent-review-full.log`，28suite403项零失败/错误/跳过；报告另存`/tmp/btreset-1.2-task2-parent-review-3up8eqhz`。使用实际不存在私密配置路径，debug/tests不依赖release凭据；全部17冻结hash仍匹配。lint实际14项Warning13/Fatal1 ExpiredTargetSdkVersion，ScopedStorage未抑制，MissingPermission0/Error0，非lint-clean。父实际原1.1并排aapt/apksigner/hash核验仍不变，报告`/tmp/btreset-1.2-task2-final-baseline.json`。规格、质量、父fresh门均通过，Task2及七子步骤标完成；尚未生成1.2 release。

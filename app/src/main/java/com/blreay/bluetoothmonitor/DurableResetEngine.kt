@@ -52,6 +52,7 @@ class DurableResetEngine(
     private val alarm: () -> Boolean,
     private val clock: () -> Long,
     private val newId: () -> String,
+    private val audit: AuditSink = AuditSink.NONE,
 ) {
     fun read() = store.read()
     /** Task2 calls this only after the run owner's guarded claimMatch succeeds. */
@@ -206,9 +207,18 @@ class DurableResetEngine(
         fun end(step: RecoveryStep): RecoveryStep {
             // Capture the terminal decision boundary, NOT the earlier worker's state sample/return time.
             val terminal = next.copy(terminalRecordedAt = clock())
-            return if (store.terminal(current, terminal,
-                if (step == RecoveryStep.RESTORED) ResetDisposition.RESTORED
-                else if (current.stage == ResetStage.ARM_FAILED) ResetDisposition.ARM_FAILED else ResetDisposition.FAILED)) step else RecoveryStep.STORAGE_FAILED
+            val disposition = if (step == RecoveryStep.RESTORED) ResetDisposition.RESTORED
+                else if (current.stage == ResetStage.ARM_FAILED) ResetDisposition.ARM_FAILED else ResetDisposition.FAILED
+            val saved = store.terminal(current, terminal, disposition)
+            // Observe the ACTUAL confirmed transaction, not a notification or a second counting policy.
+            val snapshot = (store as? CheckedResetStore)?.snapshot()
+            val row = snapshot?.history?.rows?.find { it.runId == current.runId }
+            audit.event("automatic.terminal.save", "runId" to current.runId, "commandId" to current.commandId,
+                "version" to terminal.version, "saved" to saved, "disposition" to disposition.name,
+                "counted" to row?.counted.takeIf { saved }, "total" to snapshot?.history?.total,
+                "state" to state, "authorityEnded" to current.authorityEnded, "sampledAt" to sampledAt,
+                at = terminal.terminalRecordedAt)
+            return if (saved) step else RecoveryStep.STORAGE_FAILED
         }
         fun prepare(enabled: Boolean, ordinary: Boolean = false): RecoveryStep {
             next = next.copy(commandId = newId(), stage = if (enabled) ResetStage.ON_READY else ResetStage.OFF_READY,
