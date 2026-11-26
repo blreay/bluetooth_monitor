@@ -25,12 +25,13 @@ class AppIdentityBoundaryTest {
         assertFalse(build.contains("manual toggles instead"))
     }
 
-    @Test fun `version 1_1 dependencies and ordinary build conventions stay compatible`() {
+    @Test fun `version 1_2 dependencies and ordinary build conventions stay compatible`() {
         val build = buildScript()
         assertTrue(build.contains("providers.environmentVariable(\"GITHUB_RUN_NUMBER\")"))
-        assertTrue(build.contains("val autoVersionCode: Int = (ciRunNumber ?: 0) + 2"))
+        assertTrue("Version 1.2 must keep the nullable CI run convention with offset 3",
+            build.contains("val autoVersionCode: Int = (ciRunNumber ?: 0) + 3"))
         assertTrue(build.contains("versionCode = autoVersionCode"))
-        assertTrue(build.contains("versionName = \"1.1\""))
+        assertTrue(build.contains("versionName = \"1.2\""))
         assertTrue(build.contains("isMinifyEnabled = false"))
         assertTrue(build.contains("isShrinkResources = false"))
         assertTrue(build.contains("aidl = true"))
@@ -46,17 +47,17 @@ class AppIdentityBoundaryTest {
         assertFalse(build.contains("flavorDimensions"))
     }
 
-    @Test fun `nogui upgrade is version 1_1 with local code 2 and CI run plus 2`() {
+    @Test fun `nogui upgrade is version 1_2 with local code 3 and CI run plus 3`() {
         val build = buildScript()
         val versionName = Regex("versionName\\s*=\\s*\"([^\"]+)\"")
             .find(build)?.groupValues?.get(1)
-        assertEquals("The No-GUI upgrade must be named 1.1", "1.1", versionName)
+        assertEquals("The No-GUI upgrade must be named 1.2", "1.2", versionName)
         val codeOffset = Regex("val autoVersionCode: Int = \\(ciRunNumber \\?: 0\\) \\+ (\\d+)")
             .find(build)?.groupValues?.get(1)?.toInt()
         assertNotNull("Keep the nullable CI run number plus explicit offset convention", codeOffset)
-        assertEquals("Local builds must upgrade code 1 to code 2", 2, codeOffset)
+        assertEquals("Local builds must upgrade delivered 1.1/code 2 to code 3", 3, codeOffset)
         for (ciRun in listOf(1, 42, 1000)) {
-            assertEquals("CI run $ciRun must use run number plus 2", ciRun + 2, ciRun + codeOffset!!)
+            assertEquals("CI run $ciRun must use run number plus 3", ciRun + 3, ciRun + codeOffset!!)
         }
     }
 
