@@ -22,6 +22,13 @@ class HeadlessRuntimeTest {
                     record = next
                     return true
                 }
+                override fun terminal(expected: ResetRecord, terminal: ResetRecord, disposition: ResetDisposition): Boolean {
+                    effects.add("commit")
+                    if (!storeWorks || record != expected || terminal.runId != expected.runId ||
+                        terminal.commandId != expected.commandId || terminal.version != expected.version + 1) return false
+                    record = null
+                    return true
+                }
             }, {
                 effects.add("alarm")
                 if (failStoreDuringAlarm) storeWorks = false
@@ -35,6 +42,325 @@ class HeadlessRuntimeTest {
             val dispatched = dispatched()
             return requireNotNull(engine.complete(dispatched, SwitchOutcome.submitted(SwitchMode.SHIZUKU_SHELL)))
         }
+    }
+
+    @Test fun `terminal recovery never clears pending through the ordinary commit seam`() {
+        val pending = ResetRecord("atomic-run", "on-command", stage = ResetStage.ON_SETTLED,
+            phase = ReEnablePolicy.Phase.WAITING_ON, authorityEnded = true)
+        var ordinaryRemoval = false
+        val engine = DurableResetEngine(object : ResetPersistence {
+            override fun read() = pending
+            override fun commit(expected: ResetRecord?, next: ResetRecord?): Boolean {
+                ordinaryRemoval = next == null
+                return false
+            }
+        }, { true }, { 10_000L }, { "new-command" })
+        assertEquals(RecoveryStep.STORAGE_FAILED, engine.observe(AdapterState.ON))
+        assertFalse("Terminal completion must use a checked ledger transaction, not commit(null)", ordinaryRemoval)
+    }
+
+    @Test fun `actual off observation is retained while command authority stays unknown`() {
+        val f = Fixture()
+        f.dispatched()
+        assertEquals(RecoveryStep.OBSERVE, f.engine.observe(AdapterState.OFF))
+        assertEquals(f.now, f.record!!.firstOffObservedAt)
+        assertFalse(f.record!!.authorityEnded)
+        assertEquals(0L, f.record!!.offCompletedAt)
+        assertFalse(f.engine.retryRecovery(AdapterState.OFF))
+    }
+
+    private class LedgerFixture {
+        val storage = MemoryResetStorage()
+        val store = CheckedResetStore(storage)
+        var now = 1_000L
+        var alarmWorks = true
+        var alarms = 0
+        private var serial = 0
+        val engine = DurableResetEngine(store, { alarms++; alarmWorks }, { now }, { "command-${++serial}" })
+        fun accept(run: String = "automatic-run"): ResetRecord = requireNotNull(engine.armAccepted(
+            AcceptedResetMatch(run, "Xiaomi Band", "AA:BB:CC:DD:EE:FF",
+                RunReport.ScanFacts(8_000L, 1_000L, 4, 2, 0, true), "claimed target", now), false))
+        fun off(run: String = "automatic-run", entry: Boolean = true): ResetRecord {
+            val command = requireNotNull(engine.dispatch(accept(run), CommandLease.foreground(), false))
+            now++
+            if (entry) assertTrue(engine.nativeEntered(command))
+            now++
+            return requireNotNull(engine.complete(command, SwitchOutcome.submitted(SwitchMode.SHIZUKU_SHELL)))
+        }
+        fun on(entry: Boolean = true): ResetRecord {
+            now++
+            assertEquals(RecoveryStep.DISPATCH_ON, engine.observe(AdapterState.OFF))
+            val command = requireNotNull(engine.dispatch(engine.read()!!, CommandLease.foreground(), true))
+            now++
+            if (entry) assertTrue(engine.nativeEntered(command))
+            now++
+            return requireNotNull(engine.complete(command, SwitchOutcome.submitted(SwitchMode.ORDINARY)))
+        }
+    }
+
+    @Test fun `delayed actual entry event reconciles only exact quarantined command without permitting work`() {
+        val f = LedgerFixture()
+        val command = requireNotNull(f.engine.dispatch(f.accept(), CommandLease.foreground(), false))
+        f.engine.complete(command, SwitchOutcome.uncertain(SwitchMode.SHIZUKU_SHELL, "timeout before main delivered entry"))
+        assertEquals(ResetStage.QUARANTINED, f.engine.read()!!.stage)
+        assertTrue(f.engine.nativeEntered(command, 1005L))
+        assertEquals(1005L, f.engine.read()!!.offEvidence!!.enteredAt)
+        assertFalse(f.engine.read()!!.authorityEnded)
+        assertFalse(f.engine.retryRecovery(AdapterState.OFF))
+        assertFalse(f.engine.nativeEntered(command.copy(commandId = "other"), 1005L))
+    }
+    @Test fun `automatic immediate not invoked fallback keeps run fence and allocates fresh physical command`() {
+        val f = LedgerFixture()
+        val command = requireNotNull(f.engine.dispatch(f.accept(), CommandLease.foreground(), false))
+        f.engine.nativeEntered(command)
+        assertNull(f.engine.nextPhysicalAttempt(command, SwitchOutcome.uncertain(SwitchMode.SHIZUKU_SHELL, "unknown")))
+        val candidate = f.engine.nextPhysicalAttempt(command, SwitchOutcome.notInvoked("native proven ended"))
+        assertNotNull("proven-ended same-run fallback must allocate a fresh command", candidate)
+        val next = requireNotNull(candidate)
+        assertEquals(command.runId, next.runId); assertNotEquals(command.commandId, next.commandId)
+        assertFalse(next.authorityEnded); assertEquals(ResetStage.OFF_DISPATCHED, next.stage)
+        assertNotNull(f.store.snapshot().pending); assertEquals(1, f.store.snapshot().history.rows.size)
+        assertFalse(f.engine.nativeEntered(command)); assertTrue(f.engine.nativeEntered(next))
+        assertNull(f.engine.complete(command, SwitchOutcome.submitted(SwitchMode.SHIZUKU_SHELL)))
+    }
+    @Test fun `captured physical entry and actual sample times are not main callback delivery times`() {
+        val f = LedgerFixture()
+        val command = requireNotNull(f.engine.dispatch(f.accept(), CommandLease.foreground(), false))
+        f.now = 10_000L
+        assertTrue(f.engine.nativeEntered(command, 1_050L))
+        assertEquals(1_050L, f.engine.read()!!.offEvidence!!.enteredAt)
+        f.engine.complete(command, SwitchOutcome.submitted(SwitchMode.SHIZUKU_SHELL).copy(enteredAt = 1_050L, returnedAt = 1_100L, submittedAt = 1_100L))
+        assertEquals(RecoveryStep.DISPATCH_ON, f.engine.observe(AdapterState.OFF, 1_200L))
+        assertEquals(1_200L, f.engine.read()!!.firstOffObservedAt)
+        assertEquals(1_200L, f.engine.read()!!.offEvidence!!.observedAt)
+        assertEquals(1_100L, f.engine.read()!!.offCompletedAt)
+    }
+    @Test fun `android used engine counts four distinct accepted cycles and terminal removes atomically`() {
+        val f = LedgerFixture()
+        repeat(4) { index ->
+            val off = f.off("run-$index")
+            assertNull(off.firstOffObservedAt)
+            assertEquals(f.now, off.offCompletedAt) // execution end, not a hardware OFF observation
+            assertNull(off.offEvidence!!.observedAt)
+            f.on()
+            val before = f.store.snapshot()
+            assertEquals(index.toLong(), before.history.total)
+            val writes = f.storage.writes
+            f.now++
+            assertEquals(RecoveryStep.RESTORED, f.engine.observe(AdapterState.ON))
+            assertEquals(writes + 1, f.storage.writes)
+            val after = f.store.snapshot()
+            assertNull(after.pending)
+            assertEquals(index + 1L, after.history.total)
+            assertEquals(ResetDisposition.RESTORED, after.history.rows.last().finalDisposition)
+            assertTrue(after.history.rows.last().counted)
+            assertNotNull(after.history.rows.last().firstOnObservedAt)
+        }
+        assertEquals(listOf(1L, 2L, 3L, 4L), f.store.snapshot().history.rows.map { it.sequence })
+    }
+
+    @Test fun `failed alarm after accepted match preserves one failed arm card and never off or count`() {
+        val f = LedgerFixture()
+        f.alarmWorks = false
+        val match = AcceptedResetMatch("run", "Xiaomi Band", "AA:BB:CC:DD:EE:FF", null, "claimed", f.now)
+        assertNull(f.engine.armAccepted(match, false))
+        val failed = f.engine.read()!!
+        assertEquals(ResetStage.ARM_FAILED, failed.stage)
+        assertEquals(1, f.store.snapshot().history.rows.size)
+        assertEquals(ResetDisposition.ARM_FAILED, f.store.snapshot().history.rows.single().finalDisposition)
+        assertNull(f.engine.dispatch(failed, CommandLease.foreground(), false))
+        assertEquals(RecoveryStep.FAILED, f.engine.observe(AdapterState.ON))
+        assertNull(f.engine.read())
+        assertEquals(0L, f.store.snapshot().history.total)
+        assertFalse(f.store.snapshot().history.rows.single().counted)
+    }
+
+    @Test fun `submitted without actual native entries is restored but never counted`() {
+        val f = LedgerFixture()
+        f.off(entry = false)
+        f.on(entry = false)
+        f.now++
+        assertEquals(RecoveryStep.RESTORED, f.engine.observe(AdapterState.ON))
+        assertEquals(0L, f.store.snapshot().history.total)
+        assertFalse(f.store.snapshot().history.rows.single().counted)
+    }
+
+    @Test fun `already on while on ready is restored without manufacturing submitted on evidence`() {
+        val f = LedgerFixture()
+        f.off()
+        f.now++
+        assertEquals(RecoveryStep.DISPATCH_ON, f.engine.observe(AdapterState.OFF))
+        assertEquals(RecoveryStep.RESTORED, f.engine.observe(AdapterState.ON))
+        val row = f.store.snapshot().history.rows.single()
+        assertNull(row.onEvidence)
+        assertFalse(row.counted)
+        assertEquals(0L, f.store.snapshot().history.total)
+    }
+
+    @Test fun `uncertain native off retains actual off evidence without ending authority or permitting on`() {
+        val f = LedgerFixture()
+        val command = requireNotNull(f.engine.dispatch(f.accept(), CommandLease.foreground(), false))
+        f.now++
+        assertTrue(f.engine.nativeEntered(command))
+        f.now++
+        f.engine.complete(command, SwitchOutcome.uncertain(SwitchMode.SHIZUKU_SHELL, "native authority unknown"))
+        assertEquals(RecoveryStep.OBSERVE, f.engine.observe(AdapterState.OFF))
+        val observed = f.engine.read()!!
+        assertEquals(f.now, observed.firstOffObservedAt)
+        assertEquals(f.now, observed.offEvidence!!.observedAt)
+        assertFalse(observed.authorityEnded)
+        assertFalse(observed.offEvidence!!.authorityEnded)
+        assertFalse(f.engine.retryRecovery(AdapterState.OFF))
+        assertNull(f.engine.armAccepted(AcceptedResetMatch("new", null, null, null, "new", f.now), false))
+        assertEquals(0L, f.store.snapshot().history.total)
+        f.now++
+        assertNotNull(f.engine.complete(command, SwitchOutcome.submitted(SwitchMode.SHIZUKU_SHELL)))
+        f.on()
+        f.now++
+        assertEquals(RecoveryStep.RESTORED, f.engine.observe(AdapterState.ON))
+        assertEquals(1L, f.store.snapshot().history.total)
+    }
+
+    @Test fun `duplicate or stale native entry never claims another command or rewrites first entry time`() {
+        val f = LedgerFixture()
+        val off = requireNotNull(f.engine.dispatch(f.accept(), CommandLease.foreground(), false))
+        assertTrue(f.engine.nativeEntered(off))
+        val entered = f.engine.read()!!
+        f.now++
+        assertFalse(f.engine.nativeEntered(off))
+        assertEquals(entered, f.engine.read())
+        assertFalse(f.engine.nativeEntered(off.copy(commandId = "wrong")))
+        assertNotNull(f.engine.complete(off, SwitchOutcome.submitted(SwitchMode.SHIZUKU_SHELL)))
+        f.engine.observe(AdapterState.OFF)
+        assertFalse(f.engine.nativeEntered(off))
+    }
+
+    @Test fun `engine terminal false retains original confirmed pending and never reports restored`() {
+        val f = LedgerFixture()
+        f.off()
+        f.on()
+        val before = f.store.snapshot()
+        f.storage.works = false
+        f.storage.eagerFailure = true
+        assertEquals(RecoveryStep.STORAGE_FAILED, f.engine.observe(AdapterState.ON))
+        assertEquals(before.pending, f.store.snapshot().pending)
+        assertEquals(before.history, f.store.snapshot().history)
+        assertTrue(f.store.snapshot().storageFailed)
+        assertNotNull(f.engine.read())
+        assertEquals(0L, f.store.snapshot().history.total)
+        assertFalse(f.store.newNativeAllowed())
+    }
+
+    @Test fun `explicit retry uses same accepted row and only a new actually submitted on can count`() {
+        val f = LedgerFixture()
+        f.off()
+        f.on()
+        val old = f.engine.read()!!
+        assertTrue(f.store.commit(old, old.copy(version = old.version + 1, stage = ResetStage.EXHAUSTED)))
+        assertTrue(f.engine.retryRecovery(AdapterState.OFF))
+        val ready = f.engine.read()!!
+        assertEquals(old.runId, ready.runId)
+        assertNotEquals(old.commandId, ready.commandId)
+        val on = requireNotNull(f.engine.dispatch(ready, CommandLease.foreground(), true))
+        f.now++
+        assertTrue(f.engine.nativeEntered(on))
+        f.now++
+        assertNotNull(f.engine.complete(on, SwitchOutcome.submitted(SwitchMode.ORDINARY)))
+        f.now++
+        assertEquals(RecoveryStep.RESTORED, f.engine.observe(AdapterState.ON))
+        assertEquals(1, f.store.snapshot().history.rows.size)
+        assertEquals(1L, f.store.snapshot().history.total)
+        assertNull(f.engine.complete(on, SwitchOutcome.submitted(SwitchMode.ORDINARY)))
+        assertEquals(1L, f.store.snapshot().history.total)
+    }
+
+    @Test fun `explicit actual off continuation after failed rearm counts the accepted native cycle once`() {
+        val f = LedgerFixture()
+        val offCommand = requireNotNull(f.engine.dispatch(f.accept(), CommandLease.foreground(), false))
+        f.now++
+        assertTrue(f.engine.nativeEntered(offCommand))
+        f.now++
+        f.alarmWorks = false
+        val failed = requireNotNull(f.engine.completeAndRearm(offCommand, SwitchOutcome.submitted(SwitchMode.SHIZUKU_SHELL)))
+        assertEquals(false, failed.rearmed)
+        assertEquals(ResetStage.OFF_SETTLED, f.engine.read()!!.stage)
+        assertNull(f.engine.read()!!.firstOffObservedAt)
+        assertNull(f.engine.read()!!.offEvidence!!.observedAt)
+        f.now++
+        val offObservedAt = f.now
+        assertTrue(f.engine.retryRecovery(AdapterState.OFF)) // no ordinary observe() tick has run
+        val ready = f.engine.read()!!
+        assertEquals(ResetStage.ON_READY, ready.stage)
+        assertNotEquals(offCommand.commandId, ready.commandId)
+        assertNull(f.engine.dispatch(ready, CommandLease.foreground(), false))
+        val writes = f.storage.writes
+        assertTrue(f.engine.retryRecovery(AdapterState.OFF))
+        assertEquals(writes, f.storage.writes)
+        assertEquals(ready, f.engine.read())
+        val onCommand = requireNotNull(f.engine.dispatch(ready, CommandLease.foreground(), true))
+        f.now++
+        assertTrue(f.engine.nativeEntered(onCommand))
+        f.now++
+        assertNotNull(f.engine.complete(onCommand, SwitchOutcome.submitted(SwitchMode.ORDINARY)))
+        f.now++
+        assertEquals(RecoveryStep.RESTORED, f.engine.observe(AdapterState.ON))
+        val snapshot = f.store.snapshot()
+        assertEquals(1L, snapshot.history.total)
+        assertNull(snapshot.pending)
+        val row = snapshot.history.rows.single()
+        assertTrue(row.counted)
+        assertEquals(offObservedAt, row.firstOffObservedAt)
+        assertEquals(offObservedAt, row.offEvidence!!.observedAt)
+        assertEquals(offCommand.commandId, row.offEvidence!!.commandId)
+        assertEquals(onCommand.commandId, row.onEvidence!!.commandId)
+        assertTrue(row.onEnteredAfterOffObservation)
+        assertNull(f.engine.complete(onCommand, SwitchOutcome.submitted(SwitchMode.ORDINARY)))
+        assertEquals(1L, f.store.snapshot().history.total)
+    }
+
+    @Test fun `explicit off continuation records observation without inventing absent native entry proof`() {
+        val f = LedgerFixture()
+        val off = f.off(entry = false)
+        f.alarmWorks = false
+        assertEquals(false, f.engine.rearmContinuation(off)!!.rearmed)
+        f.now++
+        assertTrue(f.engine.retryRecovery(AdapterState.OFF))
+        val on = requireNotNull(f.engine.dispatch(f.engine.read()!!, CommandLease.foreground(), true))
+        f.now++
+        assertTrue(f.engine.nativeEntered(on))
+        f.now++
+        assertNotNull(f.engine.complete(on, SwitchOutcome.submitted(SwitchMode.ORDINARY)))
+        f.now++
+        assertEquals(RecoveryStep.RESTORED, f.engine.observe(AdapterState.ON))
+        val row = f.store.snapshot().history.rows.single()
+        assertNotNull(row.firstOffObservedAt)
+        assertNull(row.offEvidence!!.enteredAt)
+        assertNull(row.offEvidence!!.observedAt)
+        assertFalse(row.counted)
+        assertEquals(0L, f.store.snapshot().history.total)
+    }
+
+    @Test fun `explicit retry of current on command never attaches off observation to earlier off evidence`() {
+        val f = LedgerFixture()
+        val off = f.off()
+        assertTrue(f.store.commit(off, off.copy(version = off.version + 1, stage = ResetStage.EXHAUSTED)))
+        assertTrue(f.engine.retryRecovery(AdapterState.UNKNOWN))
+        val on = requireNotNull(f.engine.dispatch(f.engine.read()!!, CommandLease.foreground(), true))
+        f.now++
+        assertTrue(f.engine.nativeEntered(on))
+        f.now++
+        assertNotNull(f.engine.complete(on, SwitchOutcome.rejected(SwitchMode.ORDINARY, "refused")))
+        assertEquals(RecoveryStep.EXHAUSTED, f.engine.observe(AdapterState.UNKNOWN))
+        val exhausted = f.engine.read()!!
+        assertEquals(ReEnablePolicy.Phase.WAITING_ON, exhausted.phase)
+        assertNull(exhausted.firstOffObservedAt)
+        assertNull(exhausted.offEvidence!!.observedAt)
+        f.now++
+        assertTrue(f.engine.retryRecovery(AdapterState.OFF))
+        val retried = f.engine.read()!!
+        assertNull(retried.firstOffObservedAt)
+        assertEquals(exhausted.offEvidence, retried.offEvidence)
+        assertEquals(0L, f.store.snapshot().history.total)
     }
 
     @Test fun `automatic request commits marker before actual request and never storms`() {

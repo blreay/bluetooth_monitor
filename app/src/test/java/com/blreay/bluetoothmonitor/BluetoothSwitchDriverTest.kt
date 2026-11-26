@@ -30,6 +30,42 @@ class BluetoothSwitchDriverTest {
         }
     }
 
+    @Test fun `last native entry gate refuses lease revoked while adapter or Binder preparation was blocked`() {
+        var now = 100L
+        val lease = CommandLease({ now }, 200L)
+        val invocation = SwitchInvocation()
+        assertTrue(invocation.canEnter(lease))
+        now = 200L
+        assertFalse(invocation.canEnter(lease))
+        val cancelled = CommandLease.foreground(); cancelled.cancel()
+        assertFalse(invocation.canEnter(cancelled))
+    }
+    @Test fun `actual backend invocation carries worker entry before result and fences fallback physical attempts`() {
+        val events = mutableListOf<String>()
+        val backend = object : SwitchBackend {
+            override fun readState(lease: CommandLease, callback: (AdapterState) -> Unit) = callback(AdapterState.ON)
+            override fun preflight(lease: CommandLease, budgetMs: Long, callback: (SwitchCapability) -> Unit) =
+                callback(SwitchCapability(SwitchMode.SHIZUKU_SHELL, "ready"))
+            override fun privileged(enabled: Boolean, lease: CommandLease, budgetMs: Long, callback: (SwitchOutcome) -> Unit) =
+                callback(SwitchOutcome.notInvoked("old uninstrumented path"))
+            override fun ordinary(enabled: Boolean, lease: CommandLease, callback: (SwitchOutcome) -> Unit) =
+                callback(SwitchOutcome.submitted(SwitchMode.ORDINARY))
+            override fun privilegedObserved(enabled: Boolean, lease: CommandLease, budgetMs: Long, invocation: SwitchInvocation,
+                                            callback: (SwitchOutcome) -> Unit) {
+                invocation.entered(123L); events.add("privileged")
+                callback(SwitchOutcome.notInvoked("native proven ended without submission"))
+            }
+            override fun ordinaryObserved(enabled: Boolean, lease: CommandLease, invocation: SwitchInvocation,
+                                          callback: (SwitchOutcome) -> Unit) {
+                invocation.entered(456L); events.add("ordinary")
+                callback(SwitchOutcome.submitted(SwitchMode.ORDINARY).copy(enteredAt = 456L, returnedAt = 789L, submittedAt = 789L))
+            }
+        }
+        BluetoothSwitchDriver(backend).execute(false, CommandLease.foreground(), invocation = SwitchInvocation(
+            entered = { events.add("entry:$it") }, beforeAttempt = { previous -> events.add(if (previous == null) "first-fence" else "new-command-fence"); true }
+        )) { result -> events.add("result:${result.returnedAt}") }
+        assertEquals(listOf("first-fence", "entry:123", "privileged", "new-command-fence", "entry:456", "ordinary", "result:789"), events)
+    }
     @Test fun `every actual off and on freshly preflight shizuku`() {
         val b = Backend()
         val driver = BluetoothSwitchDriver(b)

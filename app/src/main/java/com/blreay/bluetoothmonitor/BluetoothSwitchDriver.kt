@@ -6,6 +6,9 @@ data class SwitchOutcome(
     val mode: SwitchMode,
     val reason: String,
     val authorityEnded: Boolean,
+    val enteredAt: Long? = null,
+    val returnedAt: Long? = null,
+    val submittedAt: Long? = null,
 ) {
     enum class Status { NOT_INVOKED, SUBMITTED, REJECTED, UNCERTAIN, OBSERVING }
     companion object {
@@ -19,12 +22,21 @@ data class SwitchOutcome(
 
 data class SwitchCapability(val mode: SwitchMode?, val reason: String)
 
+/** Hooks are delivered in main-looper order; timestamps are captured inside the actual worker. */
+data class SwitchInvocation(val entered: (Long) -> Unit = {}, val beforeAttempt: (SwitchOutcome?) -> Boolean = { true }) {
+    fun canEnter(lease: CommandLease): Boolean = lease.valid()
+}
+
 /** Android implements these with bounded process-wide workers and checks leases again inside workers. */
 interface SwitchBackend {
     fun readState(lease: CommandLease, callback: (AdapterState) -> Unit)
     fun preflight(lease: CommandLease, budgetMs: Long, callback: (SwitchCapability) -> Unit)
     fun privileged(enabled: Boolean, lease: CommandLease, budgetMs: Long, callback: (SwitchOutcome) -> Unit)
     fun ordinary(enabled: Boolean, lease: CommandLease, callback: (SwitchOutcome) -> Unit)
+    fun privilegedObserved(enabled: Boolean, lease: CommandLease, budgetMs: Long, invocation: SwitchInvocation,
+                           callback: (SwitchOutcome) -> Unit) = privileged(enabled, lease, budgetMs, callback)
+    fun ordinaryObserved(enabled: Boolean, lease: CommandLease, invocation: SwitchInvocation,
+                         callback: (SwitchOutcome) -> Unit) = ordinary(enabled, lease, callback)
 }
 
 /** The single OFF/ON route. Never replays a possibly-invoked native command. No UI dependency. */
@@ -36,6 +48,7 @@ class BluetoothSwitchDriver(private val backend: SwitchBackend) {
         rpcMs: Long = 6_000L,
         ordinaryOnly: Boolean = false,
         onEvent: (BackendEntry) -> Unit = {},
+        invocation: SwitchInvocation = SwitchInvocation(),
         callback: (SwitchOutcome) -> Unit,
     ) {
         fun expired(): Boolean {
@@ -43,11 +56,12 @@ class BluetoothSwitchDriver(private val backend: SwitchBackend) {
             callback(SwitchOutcome.notInvoked("执行窗口已过期；未开始新命令"))
             return true
         }
-        fun ordinary(reason: String) {
+        fun ordinary(reason: String, previous: SwitchOutcome? = null) {
             if (expired()) return
+            if (!invocation.beforeAttempt(previous)) { callback(SwitchOutcome.notInvoked("新物理请求安全记录保存失败；未执行")); return }
             // Report fallback before the call; never await a notification tap.
             onEvent(BackendEntry(SwitchMode.NONE, "自动改用普通方式：$reason"))
-            backend.ordinary(enabled, lease) { outcome ->
+            backend.ordinaryObserved(enabled, lease, invocation) { outcome ->
                 callback(outcome.copy(reason = "$reason；${outcome.reason}".take(1024)))
             }
         }
@@ -71,9 +85,12 @@ class BluetoothSwitchDriver(private val backend: SwitchBackend) {
                 when {
                     ordinaryOnly -> ordinary("先前高权限执行已结束，但稳定状态未达目标；可能受系统/OEM 限制。${capability.reason}")
                     capability.mode == null -> ordinary(capability.reason)
-                    else -> backend.privileged(enabled, lease, rpcMs) { outcome ->
-                        if (outcome.status == SwitchOutcome.Status.NOT_INVOKED && outcome.authorityEnded) ordinary(outcome.reason)
-                        else callback(outcome)
+                    else -> {
+                        if (!invocation.beforeAttempt(null)) { callback(SwitchOutcome.notInvoked("物理请求安全记录未确认；未执行")); return@preflight }
+                        backend.privilegedObserved(enabled, lease, rpcMs, invocation) { outcome ->
+                            if (outcome.status == SwitchOutcome.Status.NOT_INVOKED && outcome.authorityEnded) ordinary(outcome.reason, outcome)
+                            else callback(outcome)
+                        }
                     }
                 }
             }

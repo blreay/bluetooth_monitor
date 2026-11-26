@@ -18,10 +18,13 @@ class BandResetController(
     private val runId: String,
     private val lease: CommandLease,
     private val retirement: ScanRegistrationRetirement,
-    private val onMatch: (String) -> Boolean,
+    private val onMatch: (AcceptedResetMatch) -> Boolean,
 ) {
     enum class Result { NO_ADAPTER, BLUETOOTH_OFF, NEEDS_PERMISSION, NOT_FOUND, DISABLE_FAILED, RESET_TRIGGERED, ERROR }
     fun interface Callback { fun onResult(result: Result) }
+    data class ScanOutcome(val facts: RunReport.ScanFacts?, val matchedLabel: String?, val nearMissSample: String?, val adapterState: AdapterState?)
+    var lastReport: ScanOutcome? = null
+        private set
     private val handler = Handler(Looper.getMainLooper())
     private var session: Session? = null
     private val completion = CompletionGate()
@@ -76,7 +79,7 @@ class BandResetController(
         session?.settled = true
         session?.teardown()
         Notifier.outcome(context, wantsToast, result.name)
-        RunNotification.fastPhase(context, result, facts, matchedLabel, nearMissSample, adapterState)
+        lastReport = ScanOutcome(facts, matchedLabel, nearMissSample, adapterState) // coordinator unifies reports; scanner cannot overwrite current runtime details
         callback?.onResult(result)
     }
 
@@ -87,6 +90,10 @@ class BandResetController(
         private var retirementRequested = false
         private var windowMs = 0L
         private var startedAtMs = 0L
+        private var startedWall: Long? = null
+        private var acceptedAt: Long? = null
+        private var matchedName: String? = null
+        private var matchedAddress: String? = null
         private val seenAddresses = mutableSetOf<String>()
         private var namedSeen = 0
         private val nearMisses = mutableListOf<String>()
@@ -95,8 +102,9 @@ class BandResetController(
         private fun accepting() = current() && !resetInFlight
         private val onTimeout = Runnable { if (accepting()) report(Result.NOT_FOUND) }
         private val scanCallback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) {
-                if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { onScanResult(callbackType, result) }; return }
+            override fun onScanResult(callbackType: Int, result: ScanResult) = advertisement(result, System.currentTimeMillis())
+            private fun advertisement(result: ScanResult, receivedAt: Long) {
+                if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { advertisement(result, receivedAt) }; return }
                 if (!accepting()) return
                 val mac = try { result.device?.address } catch (_: Exception) { null }
                 // Use the current broadcast/scan response name, not a cached BluetoothDevice.name Binder read.
@@ -107,12 +115,14 @@ class BandResetController(
                 // Claim before stopScan: queued/batch results cannot produce a second OFF.
                 resetInFlight = true
                 matchedLabel = if (name != null) "$name ($mac)" else (mac ?: "?")
+                matchedName = name; matchedAddress = mac; acceptedAt = receivedAt
                 teardown()
                 cycleBluetooth()
             }
             override fun onBatchScanResults(results: MutableList<ScanResult>) {
-                if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { onBatchScanResults(results) }; return }
-                results.forEach { onScanResult(ScanSettings.CALLBACK_TYPE_ALL_MATCHES, it) }
+                AdvertisementDelivery.deliver(results, { System.currentTimeMillis() }, { task ->
+                    if (Looper.myLooper() == Looper.getMainLooper()) task() else handler.post(task)
+                }) { result, receivedAt -> advertisement(result, receivedAt) }
             }
             override fun onScanFailed(errorCode: Int) {
                 if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { onScanFailed(errorCode) }; return }
@@ -128,13 +138,18 @@ class BandResetController(
             } ?: run { report(Result.ERROR); return }
             registration = ticket
             windowMs = timeout
-            startedAtMs = SystemClock.elapsedRealtime()
-            handler.postDelayed(onTimeout, timeout)
             val gate = CompletionGate()
             BoundedBluetoothWork.submit(BoundedBluetoothWork.Lane.ADAPTER, lease, 1_500L,
                 { false }, { false }, {
                     if (!lease.valid() || settled) { retirement.retire(ticket); false }
-                    else retirement.start(ticket) {
+                    else retirement.start(ticket) registration@{
+                        if (!lease.valid() || settled) return@registration false
+                        val elapsed = SystemClock.elapsedRealtime()
+                        val wall = System.currentTimeMillis()
+                        handler.post {
+                            startedAtMs = elapsed; startedWall = wall
+                            if (accepting()) handler.postDelayed(onTimeout, (timeout - (SystemClock.elapsedRealtime() - elapsed)).coerceAtLeast(0L))
+                        }
                         try {
                             scanner.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCallback)
                             true
@@ -163,7 +178,8 @@ class BandResetController(
             if (!current()) return
             val summary = "目标 ${matchedLabel ?: "?"}；${factsLine()}；疑似未匹配：${nearMisses.joinToString("、")}；已配对诊断=$targetBonded"
             // Only a durable OFF_READY job is created here. Receiver scanning never spends leftover budget in RPC/human wait.
-            val armed = onMatch(summary)
+            val armed = onMatch(AcceptedResetMatch(runId, matchedName, matchedAddress, facts(), summary,
+                acceptedAt, startedWall, acceptedAt, startedAtMs.takeIf { startedWall != null }))
             report(if (armed) Result.RESET_TRIGGERED else Result.DISABLE_FAILED)
         }
         private fun factsLine() = "扫描 ${SystemClock.elapsedRealtime() - startedAtMs}/${windowMs}ms；不同 MAC=${seenAddresses.size}，广播名=$namedSeen"
@@ -175,8 +191,9 @@ class BandResetController(
                 nearMisses.add(if (name != null) "$name ($mac)" else (mac ?: "?"))
             }
         }
-        private fun report(result: Result) = emit(result, RunReport.ScanFacts(windowMs,
-            SystemClock.elapsedRealtime() - startedAtMs, seenAddresses.size, namedSeen, nearMisses.size,
-            targetBonded, scanFailedCode), matchedLabel, nearMisses.takeIf { it.isNotEmpty() }?.joinToString("、"))
+        private fun facts() = RunReport.ScanFacts(windowMs,
+            if (startedWall == null) 0L else (SystemClock.elapsedRealtime() - startedAtMs).coerceAtLeast(0L),
+            seenAddresses.size, namedSeen, nearMisses.size, targetBonded, scanFailedCode)
+        private fun report(result: Result) = emit(result, facts(), matchedLabel, nearMisses.takeIf { it.isNotEmpty() }?.joinToString("、"))
     }
 }

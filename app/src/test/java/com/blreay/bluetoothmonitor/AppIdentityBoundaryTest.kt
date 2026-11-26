@@ -25,23 +25,39 @@ class AppIdentityBoundaryTest {
         assertFalse(build.contains("manual toggles instead"))
     }
 
-    @Test fun `version dependencies and ordinary build conventions stay unchanged`() {
+    @Test fun `version 1_1 dependencies and ordinary build conventions stay compatible`() {
         val build = buildScript()
         assertTrue(build.contains("providers.environmentVariable(\"GITHUB_RUN_NUMBER\")"))
-        assertTrue(build.contains("val autoVersionCode: Int = (ciRunNumber ?: 0) + 1"))
+        assertTrue(build.contains("val autoVersionCode: Int = (ciRunNumber ?: 0) + 2"))
         assertTrue(build.contains("versionCode = autoVersionCode"))
-        assertTrue(build.contains("versionName = \"1.0\""))
+        assertTrue(build.contains("versionName = \"1.1\""))
         assertTrue(build.contains("isMinifyEnabled = false"))
         assertTrue(build.contains("isShrinkResources = false"))
         assertTrue(build.contains("aidl = true"))
         assertTrue(build.contains("jvmTarget = \"17\""))
         assertTrue(build.contains("checkReleaseBuilds = false"))
-        val dependencies = Regex("(?:implementation|testImplementation)\\(\"([^\"]+)\"\\)")
+        val productionDependencies = Regex("(?m)^\\s*implementation\\(\"([^\"]+)\"\\)")
             .findAll(build).map { it.groupValues[1] }.toList()
-        assertEquals(listOf("dev.rikka.shizuku:api:13.1.5", "dev.rikka.shizuku:provider:13.1.5",
-            "junit:junit:4.13.2"), dependencies)
+        assertEquals(listOf("dev.rikka.shizuku:api:13.1.5", "dev.rikka.shizuku:provider:13.1.5"), productionDependencies)
+        val testDependencies = Regex("(?m)^\\s*testImplementation\\(\"([^\"]+)\"\\)")
+            .findAll(build).map { it.groupValues[1] }.toList()
+        assertEquals(listOf("junit:junit:4.13.2", "org.json:json:20240303"), testDependencies)
         assertFalse(build.contains("productFlavors"))
         assertFalse(build.contains("flavorDimensions"))
+    }
+
+    @Test fun `nogui upgrade is version 1_1 with local code 2 and CI run plus 2`() {
+        val build = buildScript()
+        val versionName = Regex("versionName\\s*=\\s*\"([^\"]+)\"")
+            .find(build)?.groupValues?.get(1)
+        assertEquals("The No-GUI upgrade must be named 1.1", "1.1", versionName)
+        val codeOffset = Regex("val autoVersionCode: Int = \\(ciRunNumber \\?: 0\\) \\+ (\\d+)")
+            .find(build)?.groupValues?.get(1)?.toInt()
+        assertNotNull("Keep the nullable CI run number plus explicit offset convention", codeOffset)
+        assertEquals("Local builds must upgrade code 1 to code 2", 2, codeOffset)
+        for (ciRun in listOf(1, 42, 1000)) {
+            assertEquals("CI run $ciRun must use run number plus 2", ciRun + 2, ciRun + codeOffset!!)
+        }
     }
 
     @Test fun `launcher label distinguishes the background app`() {
@@ -114,6 +130,21 @@ class AppIdentityBoundaryTest {
             guard.contains("exception.message"))
         assertFalse(guard.contains("logger."))
         assertFalse(guard.contains("println("))
+    }
+
+    @Test fun `release guard rejects every certificate except the delivered nogui upgrade signer`() {
+        val build = buildScript()
+        val guard = build.substringAfter("tasks.register(\"validateNoguiReleaseSigning\")")
+            .substringBefore("tasks.configureEach {")
+        assertTrue("Pin the public certificate of the delivered No-GUI 1.0 APK inside the release guard",
+            guard.contains("val expectedCertificateSha256 = \"7825ccfb3eb4fa47d7bd87ff70c82800fb0801d67907c69d2825f6c2bb492c9a\""))
+        assertTrue("Compare the actual digest and fail closed for every different certificate",
+            Regex("if \\(certificateSha256 != expectedCertificateSha256\\) \\{\\s*" +
+                "invalid\\(\"unexpected signing certificate is forbidden\\.\"\\)\\s*\\}")
+                .containsMatchIn(guard))
+        assertTrue("The expected-certificate check must follow computation of the actual digest",
+            guard.indexOf("MessageDigest.getInstance(\"SHA-256\")") <
+                guard.indexOf("certificateSha256 != expectedCertificateSha256"))
     }
 
     @Test fun `retired published certificate is refused regardless of keystore path`() {

@@ -23,10 +23,12 @@ object BluetoothSwitch {
         AdapterState.UNKNOWN
     }
 
-    fun ordinary(context: Context, enabled: Boolean): SwitchOutcome {
+    fun ordinary(context: Context, enabled: Boolean, atNativeEntry: () -> Boolean = { true }): SwitchOutcome {
         if (!BtPermissions.allGranted(context)) return SwitchOutcome.notInvoked("缺少附近设备 SCAN/CONNECT 权限；未调用普通开关")
         val adapter = adapter(context) ?: return SwitchOutcome.notInvoked("没有蓝牙适配器")
         return try {
+            // Adapter retrieval may have blocked. Recheck the actual caller lease immediately before the API.
+            if (!atNativeEntry()) return SwitchOutcome.notInvoked("普通开关进入前执行窗口已失效；未提交")
             @Suppress("DEPRECATION")
             val accepted = if (enabled) adapter.enable() else adapter.disable()
             if (accepted) SwitchOutcome.submitted(SwitchMode.ORDINARY, "普通方式已接受请求；等待实际状态，系统可能要求必要确认")

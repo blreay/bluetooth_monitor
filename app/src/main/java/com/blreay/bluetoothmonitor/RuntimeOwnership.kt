@@ -76,15 +76,17 @@ class ForegroundAdmission(
     private val timeoutMs: Long,
     private val retireRun: (String) -> Unit,
 ) {
-    data class Ticket(val runId: String, val token: String)
+    enum class Owner { AUTOMATIC, MANUAL }
+    data class Ticket(val runId: String, val token: String, val owner: Owner = Owner.AUTOMATIC)
     private var pending: Ticket? = null
     private var accepted: Ticket? = null
     private var deadline = 0L
-    fun begin(runId: String): Ticket? {
-        pending?.let { return if (it.runId == runId) it else null }
+    fun begin(runId: String, owner: Owner = Owner.AUTOMATIC): Ticket? {
+        pending?.let { return if (it.runId == runId && it.owner == owner) it else null }
         if (accepted != null) return null
-        return Ticket(runId, java.util.UUID.randomUUID().toString()).also { pending = it; deadline = clock() + timeoutMs }
+        return Ticket(runId, java.util.UUID.randomUUID().toString(), owner).also { pending = it; deadline = clock() + timeoutMs }
     }
+    fun busy() = pending != null || accepted != null
     fun waiting(runId: String) = pending?.runId == runId
     fun pendingTicket(runId: String) = pending?.takeIf { it.runId == runId }
     fun current(ticket: Ticket) = accepted == ticket || (pending == ticket && clock() < deadline)
@@ -115,10 +117,28 @@ class ForegroundAdmission(
     }
 }
 
+/** ResetService uses this exact ticket + original Android startId lifetime, not extras/runId alone. */
+class ExactServiceLifetime {
+    data class Owned(val ticket: ForegroundAdmission.Ticket, val startId: Int)
+    var owned: Owned? = null
+        private set
+    fun adopt(ticket: ForegroundAdmission.Ticket, startId: Int): Boolean {
+        if (owned != null || startId <= 0) return false
+        owned = Owned(ticket, startId)
+        return true
+    }
+    fun finish(ticket: ForegroundAdmission.Ticket, startId: Int): Boolean {
+        if (owned != Owned(ticket, startId)) return false
+        owned = null
+        return true
+    }
+}
+
 /** One exact scanner/callback slot. Native start/stop never run while holding the short state lock. */
 class ScanRegistrationRetirement(
     private val clock: () -> Long,
     private val enqueue: (() -> Unit) -> Boolean,
+    private val onRetired: (Ticket) -> Unit = {},
     private val onFailure: (Ticket, String) -> Unit,
 ) {
     data class Ticket(val runId: String, val serial: Long)
@@ -165,15 +185,15 @@ class ScanRegistrationRetirement(
     }
 
     fun retire(ticket: Ticket): Boolean {
-        synchronized(this) {
+        val neverEntered = synchronized(this) {
             val current = slot?.takeIf { it.ticket == ticket } ?: return false
             if (!current.retiring) { current.retiring = true; current.retiredAt = clock() }
             if (!current.started) {
                 slot = null // start's atomic entry check now rejects this retired ticket
-                return true
-            }
+                true
+            } else false
         }
-        schedule(ticket)
+        if (neverEntered) onRetired(ticket) else schedule(ticket)
         return true
     }
 
@@ -219,7 +239,113 @@ class ScanRegistrationRetirement(
             current.running = false
             if (stopped) slot = null else current.failed = true
         }
-        if (!stopped) onFailure(ticket, "stopScan 清理失败/权限变化；旧注册结束未确认，恢复权限后重新启动图标只重试清理")
+        if (stopped) onRetired(ticket)
+        else onFailure(ticket, "stopScan 清理失败/权限变化；旧注册结束未确认，恢复权限后重新启动图标只重试清理")
+    }
+}
+
+/** Capture a batch callback's receipt before main-looper delivery; never timestamp each delayed UI iteration. */
+object AdvertisementDelivery {
+    fun <T> deliver(values: List<T>, clock: () -> Long, dispatch: (() -> Unit) -> Unit, event: (T, Long) -> Unit) {
+        val receivedAt = clock()
+        val copy = values.toList()
+        dispatch { copy.forEach { event(it, receivedAt) } }
+    }
+}
+
+/** One actual worker-entry window. Closing observation never proves native start/registration ended. */
+class ManualObservationWindow {
+    @Volatile private var enteredElapsedNanos: Long? = null
+    private var expired = false // delivery/expiry decisions belong to Main, not the native worker
+    @Synchronized fun captureEntry(elapsedNanos: Long) {
+        if (enteredElapsedNanos == null && elapsedNanos >= 0L) enteredElapsedNanos = elapsedNanos
+    }
+    fun admit(sampledElapsedNanos: Long, receivedElapsedNanos: Long, deliveredElapsedNanos: Long, expire: () -> Unit): Boolean {
+        val entry = enteredElapsedNanos ?: return false
+        if (remaining(deliveredElapsedNanos, expire) == null) return false
+        // Android sample, callback receipt and Main delivery share elapsedRealtimeNanos. Unknown,
+        // pre-entry, reordered or late evidence is rejected, even if an early packet was queued.
+        return sampledElapsedNanos > 0L && sampledElapsedNanos >= entry &&
+            sampledElapsedNanos <= receivedElapsedNanos && receivedElapsedNanos <= deliveredElapsedNanos
+    }
+    fun startResult(deliveredElapsedNanos: Long, expire: () -> Unit, schedule: (Long) -> Unit) {
+        val remaining = remaining(deliveredElapsedNanos, expire) ?: return // expire inline, never queue a zero-delay timer
+        schedule((remaining + 999_999L) / 1_000_000L)
+    }
+    private fun remaining(deliveredElapsedNanos: Long, expire: () -> Unit): Long? {
+        if (expired) return null
+        val entry = enteredElapsedNanos
+        if (entry == null || deliveredElapsedNanos < entry || deliveredElapsedNanos - entry >= WINDOW_NANOS) {
+            expired = true
+            expire() // presentation finish requests exact retirement; it is not an authority-end event
+            return null
+        }
+        return WINDOW_NANOS - (deliveredElapsedNanos - entry)
+    }
+    companion object { private const val WINDOW_NANOS = 8_000_000_000L }
+}
+
+/** Main-looper exact routing for manual scanner cleanup; native ticket success is not a global event. */
+class ExactScannerOwner<T : Any>(private val ticketOf: (T) -> ScanRegistrationRetirement.Ticket?) {
+    private var operationId: String? = null
+    var current: T? = null
+        private set
+    fun install(id: String, scanner: T) { operationId = id; current = scanner }
+    fun retire(id: String, action: (T) -> Unit): Boolean {
+        val scanner = current?.takeIf { operationId == id } ?: return false
+        action(scanner)
+        return true
+    }
+    fun retired(ticket: ScanRegistrationRetirement.Ticket, action: (T) -> Unit): Boolean {
+        val scanner = current?.takeIf { operationId == ticket.runId && ticketOf(it) == ticket } ?: return false
+        action(scanner)
+        if (current === scanner) { current = null; operationId = null }
+        return true
+    }
+}
+
+/** The coordinator calls this same gate at every new-work/continuation entrance. */
+class RuntimeOperationGate(private val state: () -> OperationAdmission) {
+    fun newRequest(): Boolean = state().allowsNewOperation()
+    fun automaticContinuation(runId: String, ownerId: String?, setup: Boolean = false): Boolean {
+        val s = state()
+        return ownerId == runId && s.manualFence == null && !s.storageFailed && !s.integrityBlocked &&
+            (s.pending == null || s.pending.runId == runId) && (setup || !s.setupWaiting)
+    }
+    fun recovery(runId: String): Boolean {
+        val s = state()
+        return s.pending?.runId == runId && s.manualFence == null && !s.storageFailed && !s.integrityBlocked &&
+            !s.activeScan && !s.scanRetirement && !s.setupWaiting
+    }
+}
+
+data class DetailsSnapshot(
+    val store: ResetStoreSnapshot,
+    val automaticStatus: String,
+    val authorization: String,
+    val activeManual: ManualResult?,
+    val rejectionNotices: Map<ManualAction, String>,
+    val runtimeNotice: String? = null,
+) {
+    fun manual(action: ManualAction): ManualResult? = activeManual?.takeIf { it.action == action } ?: store.manualResults[action]
+    fun selected(runId: String?): ResetHistoryRow? = store.history.rows.find { it.runId == runId }
+}
+
+/** Detach is presentation only: no command/lease/scanner cancellation callback. */
+class VisibleDetailsSubscription(private val snapshot: () -> DetailsSnapshot) {
+    private var serial = 0L
+    private val observers = linkedMapOf<Long, (DetailsSnapshot) -> Unit>()
+    fun attach(observer: (DetailsSnapshot) -> Unit): Long {
+        val token = ++serial
+        observers[token] = observer
+        observer(snapshot())
+        return token
+    }
+    fun detach(token: Long) { observers.remove(token) }
+    fun publish() {
+        if (observers.isEmpty()) return
+        val value = snapshot()
+        observers.toMap().forEach { (token, callback) -> if (observers[token] === callback) callback(value) }
     }
 }
 

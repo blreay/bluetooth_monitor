@@ -18,6 +18,32 @@ class ForegroundAdmissionTest {
         fun window(id: String) = admission.scanWindow(id, 8_000L, 6_000L)
     }
 
+    @Test fun `actual service lifetime cannot be finished by wrong startId owner or old ticket`() {
+        val service = ExactServiceLifetime()
+        val manual = ForegroundAdmission.Ticket("operation", "ticket", ForegroundAdmission.Owner.MANUAL)
+        assertTrue(service.adopt(manual, 7))
+        assertFalse(service.adopt(manual, 8))
+        assertFalse(service.finish(manual, 8))
+        assertFalse(service.finish(manual.copy(owner = ForegroundAdmission.Owner.AUTOMATIC), 7))
+        assertEquals(ExactServiceLifetime.Owned(manual, 7), service.owned)
+        assertTrue(service.finish(manual, 7))
+        val next = ForegroundAdmission.Ticket("next", "next-ticket")
+        assertTrue(service.adopt(next, 9))
+        assertFalse(service.finish(manual, 7))
+        assertEquals(next, service.owned!!.ticket)
+    }
+    @Test fun `foreground manual and automatic tickets cannot borrow each others owner even with identical run token`() {
+        val f = Fixture()
+        val manual = f.admission.begin("same-id", ForegroundAdmission.Owner.MANUAL)!!
+        assertEquals(ForegroundAdmission.Owner.MANUAL, manual.owner)
+        val automatic = manual.copy(owner = ForegroundAdmission.Owner.AUTOMATIC)
+        assertFalse(f.admission.current(automatic))
+        assertFalse(f.admission.accept(automatic))
+        assertNull(f.admission.begin("same-id", ForegroundAdmission.Owner.AUTOMATIC))
+        assertTrue(f.admission.accept(manual))
+        assertFalse(f.admission.end(automatic))
+        assertTrue(f.admission.admitted(manual))
+    }
     @Test fun `startup ready before service admission cannot choose inline scan and success chooses eight seconds`() {
         val f = Fixture()
         assertTrue(f.ownership.acquire("run"))
@@ -115,6 +141,184 @@ class ForegroundAdmissionTest {
 }
 
 class ScanRetirementTest {
+    private class ManualWindowFixture {
+        val window = ManualObservationWindow()
+        val main = java.util.ArrayDeque<() -> Unit>()
+        val cleanup = java.util.ArrayDeque<() -> Unit>()
+        val accepted = mutableListOf<String>()
+        val scheduled = mutableListOf<Long>()
+        val retired = mutableListOf<ScanRegistrationRetirement.Ticket>()
+        var now = at(0L)
+        var expirations = 0
+        var entryEventDelivered = false
+        var stopWorks = true
+        val retirement = ScanRegistrationRetirement({ now / 1_000_000L }, { cleanup.add(it); true },
+            onRetired = { retired.add(it) }, onFailure = { _, _ -> })
+        val ticket = retirement.claim("manual-window") { stopWorks }!!
+        fun at(ms: Long) = 1_000_000_000L + ms * 1_000_000L
+        fun expire() { expirations++; retirement.retire(ticket) }
+        fun start() {
+            retirement.start(ticket) {
+                window.captureEntry(now)
+                main.add { entryEventDelivered = true } // timestamp capture is not delayed with this UI event
+                true
+            }
+        }
+        fun packet(label: String, sampledMs: Long) = label to at(sampledMs)
+        fun callback(values: List<Pair<String, Long>>) {
+            AdvertisementDelivery.deliver(values, { now }, { main.add(it) }) { value, received ->
+                if (window.admit(value.second, received, now, ::expire)) accepted.add(value.first)
+            }
+        }
+        fun startResult() { window.startResult(now, ::expire) { scheduled.add(it) } }
+        fun drainMain() { while (main.isNotEmpty()) main.removeFirst()() }
+    }
+    @Test fun `delayed entry event and start result cannot admit queued single or batch samples outside eight seconds`() {
+        val f = ManualWindowFixture(); f.start()
+        assertFalse(f.entryEventDelivered)
+        f.now = f.at(9_000L); f.callback(listOf(f.packet("single-9s", 9_000L)))
+        f.now = f.at(11_000L); f.callback(listOf(f.packet("batch-10s", 10_000L), f.packet("batch-11s", 11_000L)))
+        f.main.add { f.startResult() } // start-result delivery is behind the queued advertisements
+        f.now = f.at(12_000L); f.drainMain()
+        assertTrue(f.entryEventDelivered)
+        assertTrue("no out-of-window advertisement may reach the observed-device list", f.accepted.isEmpty())
+        assertEquals(1, f.expirations); assertTrue(f.scheduled.isEmpty())
+        assertTrue(f.retirement.blocked()); assertTrue(f.retired.isEmpty())
+        f.cleanup.removeFirst()(); assertEquals(listOf(f.ticket), f.retired)
+    }
+    @Test fun `expired start result expires inline before queued advertisements instead of posting zero delay behind them`() {
+        val f = ManualWindowFixture(); f.start(); f.drainMain()
+        f.main.add { f.startResult() }
+        f.now = f.at(9_000L); f.callback(listOf(f.packet("queued", 9_000L)))
+        f.now = f.at(12_000L); f.main.removeFirst()()
+        assertEquals("retirement must be requested during start-result delivery", 1, f.expirations)
+        assertTrue(f.scheduled.isEmpty()); assertEquals(1, f.main.size)
+        f.drainMain(); assertTrue(f.accepted.isEmpty()); assertEquals(1, f.expirations)
+    }
+    @Test fun `admission distinguishes sampled receipt and delivery times and conservatively rejects unverifiable packets`() {
+        val f = ManualWindowFixture(); f.start(); f.drainMain()
+        fun admit(sample: Long, receipt: Long, delivery: Long) = f.window.admit(sample, receipt, delivery, f::expire)
+        assertTrue(admit(f.at(0L), f.at(1L), f.at(2L)))
+        assertTrue(admit(f.at(7_999L), f.at(7_999L), f.at(7_999L)))
+        assertFalse(admit(0L, f.at(2L), f.at(3L))) // unknown Android sample time
+        assertFalse(admit(f.at(-1L), f.at(2L), f.at(3L))) // cached/pre-entry sample
+        assertFalse(admit(f.at(4L), f.at(2L), f.at(3L))) // sample after callback receipt
+        assertFalse(admit(f.at(1L), f.at(4L), f.at(3L))) // receipt after delivery
+        assertFalse(admit(f.at(1L), f.at(-1L), f.at(3L)))
+        assertEquals(0, f.expirations)
+        assertFalse(admit(f.at(7_999L), f.at(7_999L), f.at(8_000L)))
+        assertEquals(1, f.expirations)
+        assertFalse(admit(f.at(1L), f.at(2L), f.at(12_000L))); assertEquals(1, f.expirations)
+    }
+    @Test fun `early packets delayed past deadline are rejected and actual entry never moves to main delivery`() {
+        val f = ManualWindowFixture(); f.start()
+        f.now = f.at(1_000L); f.callback(listOf(f.packet("early", 900L)))
+        f.now = f.at(12_000L); f.drainMain()
+        assertTrue(f.accepted.isEmpty()); assertEquals(1, f.expirations)
+        val window = ManualObservationWindow()
+        val scheduled = mutableListOf<Long>()
+        window.captureEntry(f.at(0L)); window.captureEntry(f.at(3_000L)) // duplicate delivery cannot extend the first capture
+        window.startResult(f.at(3_000L), { fail("still in the original window") }) { scheduled.add(it) }
+        assertEquals(listOf(5_000L), scheduled)
+        val missing = ManualObservationWindow()
+        assertFalse(missing.admit(f.at(1L), f.at(2L), f.at(3L)) { fail("no entry proof") })
+        var expired = false
+        missing.startResult(f.at(3L), { expired = true }) { fail("missing entry must not allocate a new eight seconds") }
+        assertTrue(expired)
+    }
+    @Test fun `in window batch preserves receipt and samples despite later entry event and start result delivery`() {
+        val f = ManualWindowFixture(); f.start()
+        f.now = f.at(2_000L)
+        val packets = mutableListOf(f.packet("one", 1_000L), f.packet("two", 1_900L))
+        f.callback(packets); packets.clear()
+        f.main.add { f.startResult() }; f.now = f.at(3_000L); f.drainMain()
+        assertEquals(listOf("one", "two"), f.accepted); assertEquals(listOf(5_000L), f.scheduled)
+        assertEquals(0, f.expirations); assertTrue(f.retirement.blocked()); assertTrue(f.cleanup.isEmpty())
+    }
+    @Test fun `observation expiry during unreturned start does not end native authority or exact retirement fence`() {
+        val f = ManualWindowFixture(); f.stopWorks = false
+        var actualStartReturned = false
+        f.retirement.start(f.ticket) {
+            f.window.captureEntry(f.now)
+            f.now = f.at(12_000L)
+            assertFalse(f.window.admit(f.at(9_000L), f.at(10_000L), f.now, f::expire))
+            assertEquals(1, f.expirations); assertFalse(actualStartReturned)
+            assertTrue(f.retirement.blocked()); assertTrue(f.cleanup.isEmpty()); assertTrue(f.retired.isEmpty())
+            assertNull(f.retirement.claim("replacement") { fail("unknown start cannot be replaced"); true })
+            true
+        }
+        actualStartReturned = true
+        assertEquals(1, f.cleanup.size); f.cleanup.removeFirst()()
+        assertTrue(actualStartReturned); assertTrue(f.retirement.blocked()); assertTrue(f.retired.isEmpty())
+        f.stopWorks = true; assertTrue(f.retirement.retryRetirement()); f.cleanup.removeFirst()()
+        assertEquals(listOf(f.ticket), f.retired); assertFalse(f.retirement.blocked())
+    }
+    @Test fun `batch advertisement receipt remains original worker time across delayed main delivery`() {
+        var now = 100L
+        var pending: (() -> Unit)? = null
+        val original = mutableListOf("first", "target", "third")
+        val observed = mutableListOf<Pair<String, Long>>()
+        AdvertisementDelivery.deliver(original, { now }, { pending = it }) { value, receivedAt -> observed.add(value to receivedAt) }
+        assertTrue(observed.isEmpty())
+        now = 10_000L; original.clear(); pending!!()
+        assertEquals(listOf("first", "target", "third"), observed.map { it.first })
+        assertEquals(listOf(100L, 100L, 100L), observed.map { it.second })
+    }
+    @Test fun `old automatic and same run serial success cannot clear or stop newer manual scanner owner`() {
+        data class Scanner(val ticket: ScanRegistrationRetirement.Ticket)
+        val owner = ExactScannerOwner<Scanner> { it.ticket }
+        val old = Scanner(ScanRegistrationRetirement.Ticket("manual", 1))
+        val newer = Scanner(ScanRegistrationRetirement.Ticket("manual", 2))
+        owner.install("manual", old); owner.install("manual", newer)
+        var calls = 0
+        assertFalse(owner.retired(ScanRegistrationRetirement.Ticket("automatic", 3)) { calls++ })
+        assertFalse(owner.retired(old.ticket) { calls++ })
+        assertFalse(owner.retire("automatic") { calls++ })
+        assertSame(newer, owner.current); assertEquals(0, calls)
+        assertTrue(owner.retire("manual") { assertSame(newer, it); calls++ })
+        assertTrue(owner.retired(newer.ticket) { assertSame(newer, it); calls++ })
+        assertNull(owner.current); assertEquals(2, calls)
+        assertFalse(owner.retired(newer.ticket) { fail("duplicate cleanup cannot be delivered") })
+    }
+    @Test fun `exact cleanup callback cannot clear replacement installed reentrantly`() {
+        data class Scanner(val ticket: ScanRegistrationRetirement.Ticket)
+        val owner = ExactScannerOwner<Scanner> { it.ticket }
+        val old = Scanner(ScanRegistrationRetirement.Ticket("old", 1))
+        val newer = Scanner(ScanRegistrationRetirement.Ticket("new", 2))
+        owner.install("old", old)
+        assertTrue(owner.retired(old.ticket) { owner.install("new", newer) })
+        assertSame(newer, owner.current)
+    }
+    @Test fun `manual observed advertisements retain at most hundred devices and still update duplicates after overflow`() {
+        val devices = DiscoveredDevices(100)
+        repeat(150) { devices.add("address-$it", "advertisement-$it", -80, "BLE") }
+        assertEquals(100, devices.snapshot().size)
+        assertTrue(devices.overflow)
+        devices.add("address-0", "Xiaomi Smart Band 8 35BA", -30, "BLE")
+        assertEquals(100, devices.snapshot().size)
+        assertEquals("Xiaomi Smart Band 8 35BA", devices.snapshot().first().name)
+        assertEquals(-30, devices.snapshot().first().rssi)
+    }
+    @Test fun `exact retirement success signal only follows real cleanup or rejection before entry`() {
+        val queue = java.util.ArrayDeque<() -> Unit>()
+        val retired = mutableListOf<ScanRegistrationRetirement.Ticket>()
+        var stopWorks = false
+        val retirement = ScanRegistrationRetirement({ 1L }, { queue.add(it); true },
+            onRetired = { retired.add(it) }, onFailure = { _, _ -> })
+        val old = retirement.claim("manual") { stopWorks }!!
+        retirement.start(old) { true }
+        retirement.retire(old)
+        assertTrue(retired.isEmpty())
+        queue.removeFirst()()
+        assertTrue(retired.isEmpty()); assertTrue(retirement.blocked())
+        stopWorks = true; assertTrue(retirement.retryRetirement())
+        queue.removeFirst()()
+        assertEquals(listOf(old), retired)
+        val next = retirement.claim("next") { true }!!
+        retirement.retire(next)
+        assertEquals(listOf(old, next), retired)
+        assertFalse(retirement.start(next) { fail("retired ticket cannot enter"); true })
+    }
     private class Fixture {
         var now = 0L
         var adapterBusy = true

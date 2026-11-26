@@ -11,9 +11,10 @@ plugins {
 }
 
 // versionCode must rise on every CI build or Android refuses to
-// overwrite-install the new APK. Locally there is no run number, so it is 1.
+// overwrite-install the new APK. Version 1.1 uses local code 2, or the CI run
+// number plus 2, to upgrade the delivered No-GUI 1.0/code 1 APK.
 val ciRunNumber: Int? = providers.environmentVariable("GITHUB_RUN_NUMBER").orNull?.toIntOrNull()
-val autoVersionCode: Int = (ciRunNumber ?: 0) + 1
+val autoVersionCode: Int = (ciRunNumber ?: 0) + 2
 
 // Private signing material stays outside the repository. Missing or unreadable
 // properties are tolerated here so tests/debug work without release credentials.
@@ -47,7 +48,7 @@ android {
         // still needs these calls when privileged Shizuku control is unavailable.
         targetSdk = 32
         versionCode = autoVersionCode
-        versionName = "1.0"
+        versionName = "1.1"
     }
 
     signingConfigs {
@@ -139,6 +140,11 @@ val validateNoguiReleaseSigning = tasks.register("validateNoguiReleaseSigning") 
         if (certificateSha256 == retiredCertificateSha256) {
             invalid("retired signing certificate is forbidden.")
         }
+        // Pin the public certificate of the delivered No-GUI 1.0 APK for upgrades.
+        val expectedCertificateSha256 = "7825ccfb3eb4fa47d7bd87ff70c82800fb0801d67907c69d2825f6c2bb492c9a"
+        if (certificateSha256 != expectedCertificateSha256) {
+            invalid("unexpected signing certificate is forbidden.")
+        }
     }
 }
 
@@ -153,4 +159,5 @@ dependencies {
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

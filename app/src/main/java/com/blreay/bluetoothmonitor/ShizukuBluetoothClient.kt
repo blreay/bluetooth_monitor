@@ -226,7 +226,11 @@ class ShizukuBluetoothClient(private val context: Context, private val onStatus:
         if (next.registration == null) { retireBinding(); finishBind(SwitchCapability(null, ShizukuUserServiceBroker.UNAVAILABLE)) }
     }
 
-    fun executeToggle(enabled: Boolean, lease: CommandLease, budgetMs: Long, callback: (SwitchOutcome) -> Unit) {
+    fun executeToggle(enabled: Boolean, lease: CommandLease, budgetMs: Long, callback: (SwitchOutcome) -> Unit) =
+        executeToggleObserved(enabled, lease, budgetMs, SwitchInvocation(), callback)
+
+    fun executeToggleObserved(enabled: Boolean, lease: CommandLease, budgetMs: Long, invocation: SwitchInvocation,
+                              callback: (SwitchOutcome) -> Unit) {
         val current = binding
         val remote = current?.remote
         val mode = lastMode
@@ -236,8 +240,12 @@ class ShizukuBluetoothClient(private val context: Context, private val onStatus:
             { SwitchOutcome.uncertain(mode, "高权限 RPC 超时/异常；可能已提交，旧执行权限未确认结束，不重放命令") },
             {
                 if (!lease.valid() || binding !== current || !remote.asBinder().isBinderAlive) SwitchOutcome.notInvoked("派发前服务/执行窗口已失效")
+                else if (!invocation.canEnter(lease) || binding !== current) SwitchOutcome.notInvoked("Binder 准备返回时窗口/同一服务已失效；未进入 RPC")
                 else {
+                    val enteredAt = System.currentTimeMillis()
+                    handler.post { invocation.entered(enteredAt) } // queued before outcome delivery, not a main-delivery timestamp
                     val result = BluetoothCommandResult.decode(remote.setBluetoothEnabled(enabled))
+                    val returnedAt = System.currentTimeMillis()
                     val status = when (result.status) {
                         BluetoothCommandResult.Status.SUBMITTED -> SwitchOutcome.Status.SUBMITTED
                         BluetoothCommandResult.Status.NOT_INVOKED -> SwitchOutcome.Status.NOT_INVOKED
@@ -245,7 +253,9 @@ class ShizukuBluetoothClient(private val context: Context, private val onStatus:
                         else -> SwitchOutcome.Status.UNCERTAIN
                     }
                     SwitchOutcome(status, if (status == SwitchOutcome.Status.NOT_INVOKED) SwitchMode.NONE else mode,
-                        result.output.ifBlank { "svc 返回 ${result.status}；不代表硬件状态" }, result.authorityEnded)
+                        result.output.ifBlank { "svc 返回 ${result.status}；不代表硬件状态" }, result.authorityEnded,
+                        enteredAt = enteredAt, returnedAt = returnedAt,
+                        submittedAt = returnedAt.takeIf { status == SwitchOutcome.Status.SUBMITTED })
                 }
             },
         ) { result, late ->

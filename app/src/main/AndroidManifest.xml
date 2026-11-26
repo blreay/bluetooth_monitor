@@ -43,5 +43,6 @@
             </intent-filter>
         </receiver>
         <receiver android:name=".ReEnableReceiver" android:exported="false" />
+        <receiver android:name=".HistoryDismissReceiver" android:exported="false" />
     </application>
 </manifest>
