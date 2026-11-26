@@ -15,7 +15,7 @@
 - [x] 探索、轻量设计与真实用户批准；保存实际1.2升级输入。
 - [x] Task1：紧凑日志、实际摘要、SCAN消息和横排UI；规格/质量/父回归。
 - [x] Task2：1.3身份/说明、缺签名拒绝、规格/质量及最终整体审查。
-- [ ] Task3：父两次签名构建、实际原/新APK核验、外部保存、当前分支提交推送。
+- [x] Task3：父两次签名构建、实际原/新APK核验、外部保存、当前分支提交推送。
 
 ## Task1：一个cohesive日志/UI实现任务
 
@@ -105,7 +105,7 @@ source /home/admin/.cache/btreset-build/env.sh
 
 - [x] **2. 新公开verifier实际aapt/apksigner/DEX/JUnit。** 用native Write/Edit建立1.3 verifier，实际1.2 input1.2/code3/hash/字节/单一78证书与备份均不变，新1.3/code4、同包同证书、SDK31/32/34、NoDisplay完整launcher/内部组件/Shizuku provider/connectedDevice、RUN/RESET_IF_PRESENT、all-files和无WRITE/INTERNET/boot。DEX精简logger/summary/feedback类存在、已退役详细wrapper不要求存在。不要沿用1.2硬编码403/旧JSON事件suite要求；维护原295安全suite和真实新行为suite覆盖，不允许测试静默不执行。
 - [x] **3. 复制重验及设备边界。** 最终第二份保存`/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.3.apk`和`app/build/outputs/apk/release/bt-monitor-nogui-1.3.apk`；不存在exclusive create，存在先看/hash，不覆写未知目标；copy后metadata/hash/size/cert重验。原1.2持久/备份重新核验、原输出只从实际原文件恢复，不重编冒充。adb有授权设备才做升级/数据保留/日志/授权/SCAN消息/横排和真实BLE/OEM验收，无设备逐项未执行。
-- [ ] **4. 文档与Git。** 只补实际artifact/RED/GREEN/review/build/lint/无设备证据；allowlist stage，APK/私钥/cache不进git。提交末行`Co-Authored-By: Claude Code <noreply@anthropic.com>`，只push`origin bluetooth_monitor_shizuku_nogui`，ls-remote同本地SHA，clean tree。不amend/forcepush/main/GUI/PR/发布workflow。最终给实际APK路径、1.3/code4同签升级条件、简短授权步骤及真实验证边界。
+- [x] **4. 文档与Git。** 只补实际artifact/RED/GREEN/review/build/lint/无设备证据；allowlist stage，APK/私钥/cache不进git。提交末行`Co-Authored-By: Claude Code <noreply@anthropic.com>`，只push`origin bluetooth_monitor_shizuku_nogui`，ls-remote同本地SHA，clean tree。不amend/forcepush/main/GUI/PR/发布workflow。最终给实际APK路径、1.3/code4同签升级条件、简短授权步骤及真实验证边界。
 
 ## 完整无release命令
 
@@ -176,4 +176,6 @@ source /home/admin/.cache/btreset-build/env.sh
 - 新公开verifier两次exit0：`first-verification.json`、`second-verification.json`。实际aapt完整NoDisplay launcher/内部组件/RUN/RESET_IF_PRESENT/connectedDevice/Shizuku provider/all-files及无WRITE/INTERNET/boot，真实DEX定义和全部准确JUnit名称通过；88冻结源码hash仍一致。lint每次14项：13Warning/1Fatal ExpiredTargetSdkVersion、MissingPermission0/Error0，不是lint-clean；3原通知setter弃用和saved冗余编译warning仍保留。
 - 最终第二份exclusive复制并逐份inspect/hash/size/cert核验为`/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.3.apk`和`app/build/outputs/apk/release/bt-monitor-nogui-1.3.apk`。原1.2及额外备份、原1.1全部保持原字节/hash/identity，两个旧输出副本只从实际原文件恢复，没有重编旧版。新旧实际包/单一证书同一，code3→4符合覆盖升级身份条件。
 - 本次actual `adb devices -l`为空，证据`/tmp/btreset-1.3-parent-signed-Owleul/adb-devices.txt`：0连接/0授权设备。真机覆盖安装/数据权限保留、BLE、Toast、窄屏大字体布局、日志授权撤销恢复/根文件写入裁剪、fooView热启动、Shizuku/普通后备/OEM、现场历史累计均未执行，JVM/source/APK不替代。`delivery-summary.json`保存真实两份artifact/契约/JUnit/lint及身份核验；设备空列表不是设备通过。
-- 父仅补README实际1.3产物/签名/两次构建/原文件保留/无设备边界和1.3记录链接，未改编译源码。当前尚待最后文档提交与分支push/远端SHA、clean tree核验，Task3总checkbox及Git步骤暂不标完成。
+- 父仅补README实际1.3产物/签名/两次构建/原文件保留/无设备边界和1.3记录链接，未改编译源码。再次实际inspect新旧/保存APK、精确JUnit契约及文档数据，`before-push-verification.json`确认88源码hash不变、只改README和本计划、diff-check通过。
+- 交付文档提交`666009adb9a510dccf93d2e3712f4a9779cb772e`后，实际正常push仅`origin bluetooth_monitor_shizuku_nogui`成功，远端由bf04531快进到666009a；`git ls-remote`与本地HEAD完全相同，工作树clean。证据`/tmp/btreset-1.3-parent-signed-Owleul/first-git-verification.json`。此后只补本执行记录/checkbox；收尾提交的最终远端同步与clean tree证据记录到同目录`final-git-verification.json`，以最后实际命令结果为准。
+- CI状态没有核验通过：`gh`在当前环境未安装（exit127），只读公网API后备WebFetch也无法验证`api.github.com`域名安全；没有绕过此限制或手动触发工作流，不宣称CI通过。两次本地完整签名构建/测试与Git远端同步已实际验证；此CI读取限制不改变真机未执行边界。
