@@ -57,7 +57,7 @@
 
 定时采用独立单次`ELAPSED_REALTIME_WAKEUP`闹钟；有exact access时使用`setExactAndAllowWhileIdle`，无访问时明确显示降级，使用allow-while-idle的尽力安排。不使用Handler延时冒充CPU唤醒。
 
-- 周期闹钟的显式、immutable PendingIntent身份与原安全恢复完全分离；保存设置revision和独立、每次消费后递增的周期ticket generation，取消/替换周期计划不触碰恢复身份。重复及旧ticket不再执行。
+- 周期闹钟的显式、immutable PendingIntent身份与原安全恢复完全分离；保存设置revision和独立、每次消费后递增的周期ticket generation，取消/替换周期计划不触碰恢复身份。重复及旧ticket不再执行。每个ticket的exact/inexact来源采用两个稳定URI子身份，与实际arm方法对应；当前delivery来源不能由当前权限、下一次arm结果或可被creator更新的extra推断。失败的exact重排不得把旧inexact delivery重新标记为exact；周期取消只处理自己的两个子身份。
 - 每个周期到达先验证当前已保存ticket，checked消费并保存新的下一次ticket、成功安排下一次，再申请本次扫描。安排失败禁止该次新扫描，如实报告，不声称监控计划健康。
 - 已验证事件形成独立、进程内、一次性的触发attempt；下一次generation变化不使当前attempt自我失效。冷宿主就绪前配置改变/关闭会丢弃未接纳attempt，就绪时核对attempt与设置revision而非已消费的旧alarm。只有真实宿主和exact child成功接纳后才冻结目标；关闭配置不会撤销该child及其原安全恢复。无exact access的inexact冷闹钟不冒充exact FGS启动豁免，缺少合法宿主/机会时跳过新工作。
 - 正常时以当前实际调度点加间隔重排，系统延迟后只处理当前一次，不补齐所有漏扫，不建积压队列。
@@ -70,7 +70,7 @@
 
 自动过滤后的设备数是本次实际接纳的设备数，不等于周边所有BLE设备数量；手动扫描保留原广泛观察和100/100+规则。日志仍只有进程启动、扫描结论、开关结论三类紧凑纯文本，过滤扫描范围可在扫描结论中简短注明，不新增每个tick/拒绝事件日志。
 
-普通监控服务不一直持有WakeLock。任务期间获取带严格超时的PARTIAL_WAKE_LOCK，并覆盖正常结束、启动失败、取消、宿主退出和异常释放；锁超时不清除native/scanner隔离，不借锁延长receiver执行预算。
+普通监控服务不一直持有WakeLock。任务期间获取带严格超时的PARTIAL_WAKE_LOCK，并覆盖正常结束、启动失败、取消、宿主退出和异常释放；锁超时不清除native/scanner隔离，不借锁延长receiver执行预算。新monitor child在实际宿主接纳后采用30秒初始自动工作上限，保留原8秒真实观察及原prepare/start/startup预算；不在等待冷宿主或用户授权时持该锁。每个被原恢复gate接纳的恢复步骤使用15秒独立slice，不因为pending仍在就无限续锁；quarantine/exhaustion停止续锁，迟到的exact结束证明仍按原恢复协议接纳。
 
 锁屏不等于深度Doze。普通方案以设置间隔为期望，不保证深度Doze/OEM下严格三分钟。官方说明allow-while-idle仍有分钟级配额（常见九分钟，API文档还提示更长），FGS不保证CPU醒着，Shizuku可用不自动授予应用全部权限。名称过滤也不保证手环正在广播或一定收到scan response。
 
