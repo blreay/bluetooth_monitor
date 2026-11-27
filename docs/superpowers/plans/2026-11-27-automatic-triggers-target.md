@@ -24,7 +24,7 @@
 - [x] 设计自查：区分锁屏与Doze、真实宿主与enabled、原文名称与trim展示、周期alarm与恢复alarm、当前候选与历史、设置failure与ledger failure。
 - [x] Task1：纯配置/周期ticket/精确名称/本次候选seam，RED/GREEN及规格/质量。
 - [x] Task2：单一cohesive runtime/FGS/扫描/UI整合，RED/GREEN及规格/质量/父fresh。
-- [ ] Task3：1.4/code5、README、缺签名拒绝、审查和最终整体审查。
+- [x] Task3：1.4/code5、README、缺签名拒绝、审查和最终整体审查。
 - [ ] Task4：父两次正式构建、实际APK/原文件核验、保存、attributed commit/push和真实结果报告。
 
 ## Task1：可独立测试的配置、alarm代际和候选
@@ -283,7 +283,7 @@ val targetInput = AutoCompleteTextView(this).apply {
 
 **Modify:** `app/build.gradle.kts`、`app/src/test/java/com/blreay/bluetoothmonitor/AppIdentityBoundaryTest.kt`、`README.md`。
 
-- [ ] **1. 身份先RED。** 原12测试名称全部保留，仅两个版本敏感正文改1.4/+5，另10正文不动。真实compile成功后跑12项，应因当前1.3/+4出现两个断言failure，不把编译错误算RED。
+- [x] **1. 身份先RED。** 原12测试名称全部保留，仅两个版本敏感正文改1.4/+5，另10正文不动。真实compile成功后跑12项，应因当前1.3/+4出现两个断言failure，不把编译错误算RED。
 
 ```kotlin
 assertTrue(build.contains("val autoVersionCode: Int = (ciRunNumber ?: 0) + 5"))
@@ -295,7 +295,7 @@ for (ciRun in listOf(1, 42, 1000)) {
 }
 ```
 
-- [ ] **2. 最小build GREEN。** 只改版本与对应注释：
+- [x] **2. 最小build GREEN。** 只改版本与对应注释：
 
 ```kotlin
 // Version 1.4 uses local code 5, or the CI run number plus 5,
@@ -307,8 +307,8 @@ versionName = "1.4"
 
 保留applicationId/label/namespace/SDK/deps/signing guard/AIDL/UserService version1。README说明显式启用、持久保存、精确名称/同名/无名/本次下拉、filter count、三组合、30sec防抖、Doze不保准时、无boot/force-stop保证、设置failure和原恢复不取消、权限独立。更新历史明显过期的“当前仍1.2”等文案，但不篡改历史artifact事实；新APK数据仅父核验后补。
 
-- [ ] **3. 聚焦和完整无release GREEN，缺配置release拒绝。** 临时properties先核验不存在；缺配置assembleRelease应在现有validateNoguiReleaseSigning明确failclosed，不能成功packageRelease，也不是产品RED。
-- [ ] **4. fresh规格→质量→最终整体只读审查。** 整体覆盖baseline→所有tracked/new文件、生产使用seam、exacthost/cleanup/SDK/native/恢复未退化、424名称差异分类、所有新source guard允许范围。通过前不正式签名构建。父检查exact allowlist后提交Task3。
+- [x] **3. 聚焦和完整无release GREEN，缺配置release拒绝。** 临时properties先核验不存在；缺配置assembleRelease应在现有validateNoguiReleaseSigning明确failclosed，不能成功packageRelease，也不是产品RED。
+- [x] **4. fresh规格→质量→最终整体只读审查。** 整体覆盖baseline→所有tracked/new文件、生产使用seam、exacthost/cleanup/SDK/native/恢复未退化、424名称差异分类、所有新source guard允许范围。通过前不正式签名构建。父检查exact allowlist后提交Task3。
 
 ## Task4：父正式构建、APK核验与Git交付
 
@@ -383,3 +383,12 @@ BT_NOGUI_SIGNING_PROPERTIES=/tmp/btreset-1.4-no-signing.properties \
 - writer handoff窄修实际DONE，仅HostedWork/Coordinator/MonitorHostTest三路径；已恢复原SPEC只读复审，质量复审仍须等SPEC PASS。父报告`/tmp/btreset-1.4-parent-handoff-evidence-r2ltfy1s/verification.json`独立核验完整`full-final-111`实际exit0、23秒/73任务全执行、43suite/610tests/0failure/error/skipped，准确原602全保留、+8/-0，声明@Test与执行名称相等。111源码hash构建前后/当前一致、六Task1不变，仅三路径差异，保存debug APK SHA和新增MonitorRecoveryHandoff实际DEX定义通过；lint仍14项、不称clean，version仍1.3/code4。该root的final-hashes.json是公开证据文件hash字典；111源码数组实际在source-before/after-final.json，父按实际格式解析。公开两个repo build properties继续hash/copy，不显示内容/改动，不涉及private/signing properties；此是既有scope澄清，无权限拒绝/升级。父fresh、Task2提交、Task3和正式APK仍未执行。
 - 原SPEC handoff复审实际PASS：直接确认独立exact-child15秒非续期无锁等待、ready不截断已恢复OFF→ON、后来reblock仍复用原deadline；Coordinator实际blocked/ready/expiry接线主线程限定，仅释放托管不改pending/retirement/native/恢复alarm/lateproof。三路径/111freeze/六Task1和其他安全预算保持；移除新增测试class即重现旧MonitorHostTest全部字节，四个先前SPEC修复及七个合法旧产品差异保持。审查未运行构建/设备；实际SPEC PASS后才恢复同QUALITY审查者复审其Important，仍不提前父fresh/提交/改版本。
 - 同QUALITY handoff复审实际PASS：原无界blocked-handoff Important已解决，无新Critical/Important/actionable Minor；直接追踪exact15秒非续期deadline、actual Coordinator有限清理、ready/后来reblock/staleidentity/falseenqueue/坏clock及lateproof。明确末个接线测试是source guard而非可执行Android Coordinator；集成结论来自源码追踪，非610数量或真机证明。实际两审后父fresh`/tmp/btreset-1.4-parent-task2-final-ki09yq70`完整强制testReleaseUnitTest/assembleDebug/lintDebug exit0、23秒、73/73任务执行、43suite/610tests/0failure/error/skipped；111hash前后相同、六Task1和原424名称保持，全部声明与执行case相等，lint仍14不称clean。按实际两审及父fresh/scope/hash标Task2完成；接着允许列表提交，Task3身份/文档及正式签名仍待执行。
+- Task2实际attributed允许列表提交`a7f5126e5ed045830a1579d308a78fbef20ac5ae`：28路径（原13app/test修改+14新文件+plan），cached diffcheck通过、staged集合精确，提交后仅原design.md未跟踪，未push。父随后启动fresh Task3单一writer/Gradle owner，仅build/AppIdentityBoundaryTest/README三路径；两版本正文先真实12/2RED再最小1.4/+5GREEN，其他10正文及所有610名称/111更宽hash保持，缺签配置assembleRelease应现有guard拒绝。父仅维护plan，不并行改其三路径或Gradle；Task3两审/最终整体/正式签名仍待执行。
+- 父只读确认既有`.github/workflows/build.yml`仅push branches:[main]及workflow_dispatch，且该workflow会发布rolling latest；本轮只push No-GUI分支，不改main/CI、不手动dispatch，因此不能预期此分支自动运行该CI或称CI通过。最终仍只读核对实际远端/run状态，未触发发布。
+- Task3 writer实际DONE、仅三允许路径；父只读git diffstat另含父plan记录。已启动fresh SPEC，未提前QUALITY或签名。父公开报告`/tmp/btreset-1.4-parent-task3-evidence-2d3q3wk0/verification.json`实际核验RED12/2（AssertionError+ComparisonFailure，exit1、11秒/26执行）→identityGREEN12/0（exit0、15秒/26执行）→full43suite/610tests/0failure/error/skipped（exit0、23秒/73执行）；精确610/12names不变、仅两版本body变化、另10正文/annotation相同，111只有build/AppIdentity两路径变更、其他109及六Task1保持。GREEN两输入hash、full含README三输入hash均匹配当前；父初次错误要求两map都含三路径，读取实际execution schema后修parent parser，不是产品RED。缺签配置actualexit1在validateNoguiReleaseSigning，private properties unavailable，packageRelease未执行；明确预期guard拒绝不是产品失败，无签名release。lint仍14不称clean；版本1.4/code5尚未正式交付，两审/最终整体/父签名核验仍待完成。
+- Task3 fresh SPEC实际FAIL，仅两项README完整性缺口：未明确真实广播原文`未知设备`与null/blank显示占位不同、仍可选择和精确匹配；30秒初始slice说明未明确包括实际8秒自动BLE观察、排除冷宿主启动/人类Shizuku授权等待。父直接Read README32/40、Editor6—8/40—44、Coordinator413—433确认，交同Task3 writer仅README native Edit修复。其余111/109/六Task1、12names/10body、RED/GREEN/610/guard/lint保存证据已由SPEC独立核验通过；不是已识别runtime回归，QUALITY仍未启动，不提前正式签名。
+- 同Task3 writer仅README32/40完成修复，公开证据`/tmp/btreset-task3-readme-repair-lv2t4aee`；父实际hash/逐行diff核验111编译相关文件零变化、六Task1冻结、仅两行README变化、根design不变及diffcheck通过，当前README SHA256`d6cb63d34d1cfad2697ddfecf08935521b2b40468f8dcc0d00dd65fa1567418e`。同SPEC复审实际PASS，两项缺口均解决，无剩余SPEC项；原完整构建README旧hash仅作为历史输入，不冒称修复后已重新构建。SPEC PASS后才启动fresh Task3 QUALITY只读审查；父fresh、最终整体审查、Task3提交和正式签名仍待执行。
+- Fresh Task3 QUALITY实际PASS，无Critical/Important/actionable Minor；build最小版本变更、12names/10body、README两修复与历史事实、111/109/六Task1及缺签guard保存证据均独立核验。随后启动fresh最终整体只读审查，覆盖f884→当前所有tracked/new实际接线及原安全边界；当时整体结果待返回，不提前正式签名或Task3提交。
+- 两审通过后父fresh完整无release：`/tmp/btreset-1.4-parent-task3-final-kavx0cei`实际exit0、24秒、73/73任务执行、43suite/610tests/0failure/error/skipped；111hash前后不变、六Task1及全部声明/执行名称一致，准确43suite/610case map与Task2父fresh完全相同。当前已审README hash仍d6cb63d…；tracked diff恰为三Task3路径及父plan，只有原design未跟踪，diffcheck通过。lint仍13Warning+1Fatal，不称clean；debug实际SHA256`437f8f915f3dbd142e49c6f68008082f766fbb8e5d24bef0272f85da70934d6a`，不是正式签名release或设备证明。
+- Fresh最终整体审查实际FINAL REVIEW PASS，无verified Critical/Important/actionable Minor；独立追踪触发→checked周期旋转→真实host→exact child→冻结名称BLE→原安全恢复，确认drain/有限slice/非续期handoff/retained cleanup/native lateproof/原ResetService身份/原子历史与计数不退化。审查结束111/六Task1/README hash不变，原424及12身份名称保留，父fresh43/610实际XML独立解析一致；审查不等于真机或正式签名验收。Task3按两审、整体审查及父fresh/scope实际完成，接着允许列表提交。
+- 正式构建前父再次实际核验真实1.1/1.2/1.3持久APK、额外备份及现有输出副本：`/tmp/btreset-1.4-pre-signing-originals-P6HxWyTu/originals.json`、`output-target-inspection.json`，全部原metadata/hash/单一78证书不变；两个1.4交付目标实际尚不存在。此为原文件保全检查，不是1.4正式构建。
