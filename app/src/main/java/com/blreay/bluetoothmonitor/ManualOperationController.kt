@@ -37,6 +37,7 @@ class ManualOperationController(
     private val changed: () -> Unit = {},
     private val feedback: (ManualFeedback) -> Unit = {},
     private val audit: AuditSink = AuditSink.NONE,
+    private val candidates: ManualScanCandidates = ManualScanCandidates(),
 ) {
     private var ownedId: String? = null // absent on cold start: even a READY fence is not replayed
     private var lease: CommandLease? = null
@@ -247,6 +248,8 @@ class ManualOperationController(
         }
     }
     private fun startScan(operation: ManualOperation, lease: CommandLease) {
+        candidates.begin(operation) // only after exact actual foreground acceptance and checked DISPATCHED fence
+        val candidateIdentity = ManualScanIdentity(operation.operationId, operation.commandId)
         runtime.scan(operation, lease, object : ManualScanEvents {
             override fun registered(identity: String): Boolean {
                 val exact = exact(operation.commandId) ?: return false
@@ -272,6 +275,7 @@ class ManualOperationController(
             }
             override fun devices(devices: List<DiscoveredDevices.Device>, overflow: Boolean) {
                 if (exact(operation.commandId) == null || scanFinished) return
+                candidates.update(candidateIdentity, devices.map { ManualScanCandidate(it.mac, it.advertisementName) }, overflow)
                 live = live?.copy(devices = devices.take(100), overflow = overflow,
                     reason = "仅显示本次 BLE 广播：${devices.size} 个；不自动开启/配对/连接/重置")
                 changed() // coalesced by scanner, NOT a ledger write per advertisement
@@ -282,11 +286,15 @@ class ManualOperationController(
             }
             override fun summary(value: ScanSummary, finalDevices: List<DiscoveredDevices.Device>) {
                 if (exact(operation.commandId) == null || scanSummary != null) return
+                candidates.update(candidateIdentity, finalDevices.map { ManualScanCandidate(it.mac, it.advertisementName) }, value.overflow)
+                candidates.close(candidateIdentity) // final update BEFORE close, before returned/reconcile may clear live result
                 live = live?.copy(devices = finalDevices.take(100), overflow = value.overflow)
                 summary(value) // final snapshot alone bypasses finished; queued advertisements still cannot
             }
             override fun finished(reason: String, failed: Boolean) {
                 if (exact(operation.commandId) == null || scanFinished) return
+                candidates.update(candidateIdentity, live?.devices.orEmpty().map { ManualScanCandidate(it.mac, it.advertisementName) }, live?.overflow == true)
+                candidates.close(candidateIdentity)
                 scanFinished = true; scanFailed = failed
                 live = live?.copy(scanEndedAt = wallClock(), reason = reason,
                     status = if (failed) ManualResultStatus.FAILED else ManualResultStatus.OBSERVING)

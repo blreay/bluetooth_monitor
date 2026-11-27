@@ -332,6 +332,10 @@ data class DetailsSnapshot(
     val activeManual: ManualResult?,
     val rejectionNotices: Map<ManualAction, String>,
     val runtimeNotice: String? = null,
+    val monitor: AutomaticMonitorRuntimeSnapshot? = null,
+    val scanCandidates: ManualScanCandidatesSnapshot = ManualScanCandidatesSnapshot(),
+    val manualScanTarget: TargetSnapshot? = null,
+    val periodicTransport: MonitorTransportSnapshot? = null,
 ) {
     fun manual(action: ManualAction): ManualResult? = activeManual?.takeIf { it.action == action } ?: store.manualResults[action]
     fun selected(runId: String?): ResetHistoryRow? = store.history.rows.find { it.runId == runId }
@@ -344,14 +348,16 @@ class VisibleDetailsSubscription(private val snapshot: () -> DetailsSnapshot) {
     fun attach(observer: (DetailsSnapshot) -> Unit): Long {
         val token = ++serial
         observers[token] = observer
-        observer(snapshot())
+        try { observer(snapshot()) } catch (_: Exception) { } // presentation never blocks runtime cleanup
         return token
     }
     fun detach(token: Long) { observers.remove(token) }
     fun publish() {
         if (observers.isEmpty()) return
-        val value = snapshot()
-        observers.toMap().forEach { (token, callback) -> if (observers[token] === callback) callback(value) }
+        val value = try { snapshot() } catch (_: Exception) { return } // failed producer must not undo accepted work/cleanup
+        observers.toMap().forEach { (token, callback) ->
+            if (observers[token] === callback) try { callback(value) } catch (_: Exception) { }
+        }
     }
 }
 

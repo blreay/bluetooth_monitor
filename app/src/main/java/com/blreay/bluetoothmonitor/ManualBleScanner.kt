@@ -17,10 +17,11 @@ class ManualBleScanner(
     private val lease: CommandLease,
     private val retirement: ScanRegistrationRetirement,
     private val events: ManualScanEvents,
+    private val target: TargetSnapshot?,
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val devices = DiscoveredDevices(100)
-    private val summaryObservation = ScanSummaryObservation()
+    private val summaryObservation = ScanSummaryObservation(target)
     private var ticket: ScanRegistrationRetirement.Ticket? = null
     @Volatile private var finished = false
     private var updateQueued = false
@@ -127,19 +128,18 @@ class ManualBleScanner(
         val snapshot = devices.snapshot()
         summaryObservation.closeManual(snapshot.size, devices.overflow,
             observationWindow.capturedEntryElapsedNanos() != null, ticket != null, result, start)?.let { value ->
-            events.devices(snapshot, devices.overflow)
-            try { events.summary(value, snapshot) } catch (_: Exception) { } // final snapshot cannot swallow exact retirement
+            ManualScanPresentation.finalSnapshot({ events.devices(snapshot, devices.overflow) },
+                { events.summary(value, snapshot) }) // both final observers run before returned/terminal retirement
         }
     }
     private fun finish(reason: String, failed: Boolean, start: Started? = null) {
         if (finished) return
-        closeObservation(if (failed) "失败（部分结果）" else "成功", start)
-        events.finished(reason, failed)
-        retire()
+        ManualScanPresentation.finish({ closeObservation(if (failed) "失败（部分结果）" else "成功", start) },
+            { events.finished(reason, failed) }, ::retire)
     }
     fun retire() {
-        closeObservation("取消（部分结果）") // silent retirement publishes once; never recursively calls finished
-        ticket?.let { retirement.retire(it) }
+        try { closeObservation("取消（部分结果）") } // silent retirement publishes once; never recursively calls finished
+        finally { ticket?.let { retirement.retire(it) } }
     }
     fun registrationTicket(): ScanRegistrationRetirement.Ticket? = ticket
     fun retirementConfirmed(exact: ScanRegistrationRetirement.Ticket) {

@@ -232,7 +232,7 @@ class RuntimeAuditTest {
         assertEquals(1, confirmed); assertFalse(retirement.blocked()); assertFalse(retirement.retire(ticket))
     }
     @Test fun `annotation observes target before cap and later name cannot erase it`() {
-        val observation = ScanSummaryObservation(); val devices = DiscoveredDevices(100)
+        val observation = ScanSummaryObservation(TargetSnapshot(1L, BandMatcher.TARGET_NAME)); val devices = DiscoveredDevices(100)
         repeat(100) { devices.add("address-$it", "Speaker", -50, "BLE") }
         val target = "11:22:33:44:35:BA"
         observation.admitted(target, BandMatcher.TARGET_NAME)
@@ -243,7 +243,7 @@ class RuntimeAuditTest {
         assertNull(observation.close(0, false, false, "未执行"))
     }
     @Test fun `automatic observation latches target even rejected claim or arm and does not create new policy`() {
-        val observation = ScanSummaryObservation(); val seen = mutableSetOf<String>(); val owner = RunOwnership()
+        val observation = ScanSummaryObservation(TargetSnapshot(1L, BandMatcher.TARGET_NAME)); val seen = mutableSetOf<String>(); val owner = RunOwnership()
         observation.admitted("11:22:33:44:35:BA", BandMatcher.TARGET_NAME)
         seen.add("11:22:33:44:35:BA")
         assertFalse(owner.claimMatch("not-owned"))
@@ -254,7 +254,7 @@ class RuntimeAuditTest {
         assertEquals(ScanSummary(null, false, null, "未执行"), ScanSummaryObservation().close(0, false, false, "未执行"))
         assertEquals(ScanSummary(null, false, null, "未执行"), ScanSummaryObservation().close(0, false, false, "取消（部分结果）"))
         assertEquals(ScanSummary(null, false, null, "状态未确认"), ScanSummaryObservation().close(0, false, false, "状态未确认"))
-        assertEquals(ScanSummary(0, false, false, "取消（部分结果）"), ScanSummaryObservation().close(0, false, true, "取消（部分结果）"))
+        assertEquals(ScanSummary(0, false, false, "取消（部分结果）"), ScanSummaryObservation(TargetSnapshot(1L, BandMatcher.TARGET_NAME)).close(0, false, true, "取消（部分结果）"))
         val window = ManualObservationWindow(); window.captureEntry(1_000_000_000L); var expired = 0
         assertTrue(window.admit(1_500_000_000L, 2_000_000_000L, 3_000_000_000L) { expired++ })
         assertFalse(window.admit(1_500_000_000L, 2_000_000_000L, 9_000_000_000L) { expired++ })

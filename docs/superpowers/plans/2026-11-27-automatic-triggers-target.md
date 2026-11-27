@@ -23,7 +23,7 @@
 - [x] 探索普通方案、现有安全接线和新的配置/候选接口；用户确认。
 - [x] 设计自查：区分锁屏与Doze、真实宿主与enabled、原文名称与trim展示、周期alarm与恢复alarm、当前候选与历史、设置failure与ledger failure。
 - [x] Task1：纯配置/周期ticket/精确名称/本次候选seam，RED/GREEN及规格/质量。
-- [ ] Task2：单一cohesive runtime/FGS/扫描/UI整合，RED/GREEN及规格/质量/父fresh。
+- [x] Task2：单一cohesive runtime/FGS/扫描/UI整合，RED/GREEN及规格/质量/父fresh。
 - [ ] Task3：1.4/code5、README、缺签名拒绝、审查和最终整体审查。
 - [ ] Task4：父两次正式构建、实际APK/原文件核验、保存、attributed commit/push和真实结果报告。
 
@@ -164,7 +164,7 @@ BT_NOGUI_SIGNING_PROPERTIES=/tmp/btreset-1.4-task1-no-signing.properties \
 
 **Test:** 新`MonitorHostTest.kt`、`AutomaticTriggerRuntimeTest.kt`、`AutomaticTargetScanTest.kt`、`AutomaticSettingsUiTest.kt`或等价；扩展原`ForegroundAdmissionTest.kt`、`HeadlessRuntimeTest.kt`、`ManualFeedbackTest.kt`、`DiscoveredDevicesTest.kt`、`DetailsSnapshotTest.kt`与必要source guard。原driver/native/SDK/engine/retirement/ledger测试正文不放宽；不改生产依赖、AIDL、UserService协议、恢复算法或永久Gradle设置。
 
-- [ ] **1. 抽生产使用的opaque host与exact child seam，跑机械保行为基线，再行为RED。** 不把idle host设置成automatic owner/serviceDone。建议合同：
+- [x] **1. 抽生产使用的opaque host与exact child seam，跑机械保行为基线，再行为RED。** 不把idle host设置成automatic owner/serviceDone。建议合同：
 
 ```kotlin
 data class MonitorChildTicket(
@@ -210,9 +210,9 @@ interface MonitorHostPort {
 
 fixture驱动真实production host/coordinator seam；不是只测fake期望。覆盖wrong child/run/host/token、4秒迟到准入、inline ready、exact startId、failed/hung/late scanner retirement和旧completion不结束replacement。原ResetService仍START_NOT_STICKY、空/过期intent停止，serviceDone仅pending/accepted operation。
 
-- [ ] **2. 接监控service、短WakeLock和drain。** 非exported connectedDevice，独立静默ongoing通知ID106/channel（不复用100—105或runId history）。合法可见机会或validated exact-alarm尝试启动，FGS被系统拒绝时如实保留失败，不启动后台Activity。service start ticket、successful foreground、当前capability和lease均须真实核验。监控服务默认START_NOT_STICKY；timer可提供冷重建机会，仅屏幕组合在进程死亡后不承诺复活。
+- [x] **2. 接监控service、短WakeLock和drain。** 非exported connectedDevice，独立静默ongoing通知ID106/channel（不复用100—105或runId history）。合法可见机会或validated exact-alarm尝试启动，FGS被系统拒绝时如实保留失败，不启动后台Activity。service start ticket、successful foreground、当前capability和lease均须真实核验。监控服务默认START_NOT_STICKY；timer可提供冷重建机会，仅屏幕组合在进程死亡后不承诺复活。
 
-每次新monitor child的初始自动扫描整体窗口30秒，内部仍从真实entry观察8秒；窗口只在实际host/child接纳后开始，不在等待冷宿主时持锁。原授权就绪status/connection可串行10秒、prepare/start各1.5秒加8秒观察约21秒，因此不采用不足的15秒整体建议；原launcher可能等待用户Shizuku授权的60秒setup不塞进此新自动窗口，自动来源不引入等待用户授权。每个recoveryStep仍新15秒bounded work window（原两个600ms状态读+5秒preflight+6秒RPC+1秒安全普通后备约13.2秒）；manual45秒/scan8秒、原receiver预算不变。`HostedWorkWindow`通过当前exact child取得有限CommandLease和带timeout的release-once PARTIAL_WAKE_LOCK；无child/idle/draining不得发新工作。serviceTick和alarm重入仍tickBusy/CompletionGate单飞，禁止以`CommandLease.foreground()`无限lease替代monitor work窗口。锁超时释放锁/禁新work，独立接纳late proof，不清authority或scanner fence。
+每次新monitor child的初始自动扫描整体窗口30秒，内部仍从真实entry观察8秒；窗口只在实际host/child接纳后开始，不在等待冷宿主时持锁。原授权就绪status/connection可串行10秒、prepare/start各1.5秒加8秒观察约21秒，因此不采用不足的15秒整体建议；原launcher可能等待用户Shizuku授权的60秒setup不塞进此新自动窗口，自动来源不引入等待用户授权。每个recoveryStep仍新15秒bounded work window（原两个600ms状态读+5秒preflight+6秒RPC+1秒安全普通后备约13.2秒）；manual45秒/scan8秒、原receiver预算不变。`HostedWorkWindow`通过当前exact child取得有限CommandLease和带timeout的release-once PARTIAL_WAKE_LOCK；无child/idle不得发工作，draining只阻新child/新自动扫描，既有exact child的安全恢复slice仍按原gate接纳直至其有限生命周期终态，不以关闭配置断开OFF→ON。serviceTick和alarm重入仍tickBusy/CompletionGate单飞，禁止以`CommandLease.foreground()`无限lease替代monitor work窗口。锁超时释放锁/禁新work，独立接纳late proof，不清authority或scanner fence。
 
 ```kotlin
 @Test fun `disable cancels periodic alarm but lets accepted restoration finish`() {
@@ -231,7 +231,7 @@ fixture驱动真实production host/coordinator seam；不是只测fake期望。�
 
 关闭自动成功后撤屏幕监听/取消周期/阻新auto；accepted child继续原恢复直至有限生命周期完成。真正销毁仍只撤对应host、cancel观察lease、retire exact scanner，不以此证明native结束。手动OFF不会因监控重新打开；window/storage/authority故障保留独立隔离。
 
-- [ ] **3. Android配置和代际安全alarm。** `AutomaticSettingsPreferences`严格解析缺失/完整record/损坏，原子commit schema、settings revision、周期generation和pending ticket，不读eager-cache确认。periodic非exported receiver、独立requestCode/action、generation-bearing URI、immutable PI；与ReEnableScheduler requestCode10完全分离。
+- [x] **3. Android配置和代际安全alarm。** `AutomaticSettingsPreferences`严格解析缺失/完整record/损坏，原子commit schema、settings revision、周期generation和pending ticket，不读eager-cache确认。periodic非exported receiver、独立requestCode/action、generation-bearing URI、immutable PI；与ReEnableScheduler requestCode10完全分离。
 
 ```kotlin
 val targetFilter = ScanFilter.Builder()
@@ -254,13 +254,13 @@ actualarm时查询canScheduleExactAlarms；有access setExactAndAllowWhileIdle�
 
 独立触发attempt实际Task1合同：`data class TriggerAttempt(val settingsRevision: Long, val attemptId: String)`及`AutomaticMonitorScheduler.onTimer/onScreen/accept/discard`，process-local、精确引用、一次性、只证明事件已验证，不授权native；Task2必须复用，不再创建第二个scheduler或settings authority。消费旧alarm和arm新generation后，建立该attempt；冷宿主就绪时核对当前confirmed settings revision和exact attempt，不再要求它等于已消费的旧alarm。配置变化/关闭丢弃未接纳attempt；exact child接纳后独立冻结目标，后续关闭不能撤销child。补行为RED：arm-next不误使当前attempt失效、cold-host等待时关闭/换目标不执行、child已接纳后关闭仍按旧目标恢复。
 
-- [ ] **4. 三触发和冻结目标接线。** service动态监听SCREEN_ON/OFF，API33 flags遵循受保护系统广播，旧API仍可用；无manifest屏幕receiver、无USER_PRESENT替代。每次source检查当前confirmed settings/capability/gate/cooldown；接受时冻结TargetSnapshot到run/operation，异步ready后不再读新设置。自动scanner使用上面真实非空完整name filter，并在当前packet再核对TargetSnapshot；MAC/旧suffix/旧cached name只可诊断而非命中。
+- [x] **4. 三触发和冻结目标接线。** service动态监听SCREEN_ON/OFF，API33 flags遵循受保护系统广播，旧API仍可用；无manifest屏幕receiver、无USER_PRESENT替代。每次source检查当前confirmed settings/capability/gate/cooldown；接受时冻结TargetSnapshot到run/operation，异步ready后不再读新设置。自动scanner使用上面真实非空完整name filter，并在当前packet再核对TargetSnapshot；MAC/旧suffix/旧cached name只可诊断而非命中。
 
 `BandResetController`实际predicate、诊断和`ScanSummaryObservation`一致，当前有效广告在cap前锁存target；所有主要接纳点包括launcher、broadcast、monitor、manual summary均传入本次target。旧BandMatcher可作为不再驱动当前Android行为的legacy helper保留原10测试，但生产扫描/当前summary不得漏用其default fallback；若替换该helper，则精确记录直接产品测试变化，不删原native安全用例。
 
 `DiscoveredDevices`保留真实raw advertisementName，display name处理可独立；manualScanner仍只采集/summary，不能引入matcher/reset/bond/connect/classic discovery。filtered自动count只表示过滤后的观察，logger仍三类且异常不改变蓝牙；手动100+规则保留。
 
-- [ ] **5. 本次候选、draft和详情接线。** 在ManualOperationController exact accepted SCAN begin和guarded devices/summary末snapshot更新Task1候选；新SCAN清空、末值在live清除后仍在，迟到不覆盖新扫描；不从snapshot.manual(SCAN)或manual_results hydration恢复。详情adapter用真实name，选择只填名称，未知placeholder不填；可列地址区分但不绑定MAC。无广播名选择提示不能设为名称目标。
+- [x] **5. 本次候选、draft和详情接线。** 在ManualOperationController exact accepted SCAN begin和guarded devices/summary末snapshot更新Task1候选；新SCAN清空、末值在live清除后仍在，迟到不覆盖新扫描；不从snapshot.manual(SCAN)或manual_results hydration恢复。详情adapter用真实name，选择只填名称，未知placeholder不填；可列地址区分但不绑定MAC。无广播名选择提示不能设为名称目标。
 
 新增master/三个checkbox、分钟EditText、可编辑AutoCompleteTextView和显式Save，用户草稿与confirmed revision分开，保存conflict/false明确提示且保留草稿。adapter变化不覆盖text/cursor/dirty，Activity重建只保留草稿/选择的历史身份、不保存候选冒充fresh。subscribe/unsubscribe原生命周期保持，窗口关闭不取消工作。保留原两行buttons、无独立SCAN卡/日志说明、explicit log access、历史/累计；新增显式exact-alarm和电池优化系统设置入口，不自动shell修改策略。
 
@@ -275,7 +275,7 @@ val targetInput = AutoCompleteTextView(this).apply {
 
 测试需要真实生产draft/candidate/schema/modelseam，而非仅source字符串。source tests只辅助核验actual filter/service/receiver/settingsIntent/no trampoline/no boot/no permanent lock/no arbitrary command，允许新增nonexported periodicreceiver。
 
-- [ ] **6. RED/GREEN和冻结审查。** 聚焦真实host/trigger/target/UI/candidate/oldmanual/FGS seam。新增边界包括权限撤销、nearby失败、exact权限降级、无宿主屏幕skip、timer冷启动被拒绝、设置损坏与安全ledger独立、same-name/nameless、目标在manual第101st广告仍锁存、summary失败finally仍交付authority、无锁idle/异常release-once、late native/window ended不重复。
+- [x] **6. RED/GREEN和冻结审查。** 聚焦真实host/trigger/target/UI/candidate/oldmanual/FGS seam。新增边界包括权限撤销、nearby失败、exact权限降级、无宿主屏幕skip、timer冷启动被拒绝、设置损坏与安全ledger独立、same-name/nameless、目标在manual第101st广告仍锁存、summary失败finally仍交付authority、无锁idle/异常release-once、late native/window ended不重复。
 
 全部GREEN后完整test/debug/lint强制重跑，记录每个suite准确名称；原未取代安全测试源码/数量和5秒fixture不放宽。lint原13Warning+1Fatal如实；新增MissingPermission/Error必须修复而非抑制。规格PASS→质量PASS，父fresh完整回归和scope/hash后Task2提交；不得并行Gradle。
 
@@ -359,3 +359,27 @@ BT_NOGUI_SIGNING_PROPERTIES=/tmp/btreset-1.4-no-signing.properties \
 - 父在writer DONE、仅只读规格复审者时fresh完整强制test/debug/lint：`/tmp/btreset-1.4-parent-task1-timing-uwlKpMLp`实际exit0、18秒、73任务全部执行、31suite/515tests/0failure/error/skipped；原88hash/424准确名称及六份新freezehash均一致，lint14仍13Warning+1Fatal target32、Error/MissingPermission0。已向原规格审查者发timing复审；当时实际规格PASS前不恢复质量复审，Task1仍未标完成/提交，不是正式1.4交付。
 - timing规格复审实际SPEC PASS：直接检查高水位、post-dispatch cooldown、坏确认clock retained acceptance/独立latch、确认阶段guard；before freeze对应原已审freeze，其他四份保持、原36scheduler测试正文及fixture前缀字节不变，13新测试调用生产方法；六份before/end hash及原88一致。审查者未重跑build/读取新输出，不冒称其执行验证。实际SPEC PASS后已发同一质量审查者复审；当时质量结果待返回，Task1不提前提交。
 - 同一质量审查者timing复审实际QUALITY PASS：两个原Important都已解决，无新Critical/Important/Minor；直接检查新增13测试及生产high-water/post-confirmation/latch/重入窗口，six/88 before/end hash保持。两个审查者均只静态审查，不冒称其运行515测试；执行证据由父fresh18秒/515测试提供。Task1按实际两门通过及父fresh/scope/hash标完成，允许列表提交仅六新文件及本次spec/plan记录。Android整合、版本1.4、正式签名构建和push仍待后续任务，不声称已交付。
+- Task1允许列表实际attributed提交`2dad34c4b51b66123cb3ca45522a0af061f2e186`，实际staged集合恰为六份已审源码/测试及spec/plan两文档；提交后只原用户`design.md`未跟踪，未push。父随后启动fresh Task2单一cohesive writer/Gradle owner，提供完整任务与真实Task1 API，不让其读取plan，不改原六份Task1或另建settings/scheduler；父只维护执行文档，不并行Gradle/生产编辑。Task2须实际宿主/child、30秒初始/15秒slice、来源安全URI、rawfilter、current候选与draftUI接线及两审，不提前声称完成。
+- 父再次实际baseline-only核验`/tmp/btreset-1.4-after-task1-originals.json`：真实1.1/1.2/1.3及额外备份包名/version/code/bytes/hash/单一78证书均不变，`freshBuildFor1_4=false`；未新签名。Task1提交footer已实际读取为指定Co-Authored-By。用户根`design.md`此时hash`a008ac15f06e53991f110d45aec18e30df33e64b62165b011e8b42ba1d7f0148`，仍不修改/提交。
+- Task2实现者报告独立证据目录`/tmp/btreset-task2-fresh-99qxcjft`，515名称/31suite基线和包括wrapper launchers的96项更宽inventory。父澄清94仅旧verifier88+Task1six推导，不要求凑数或排除wrapper；保留实际96全inventory及原88+6精确映射，最终按实际hash核验。当时Task2在探索/RED准备，不冒称接线或测试已完成。
+- 父只读核验Task2初期target/host保存XML/log：targetRED4failure（3AssertionError+1ComparisonFailure，后者是JUnit断言子类）→GREEN4；host最初10NPE仅fixture失败不计行为RED，随后真实assertionRED10AssertionError→GREEN10；各compile成功后执行test，26任务全部执行、9/10秒，无error/skipped。该target/host小型GREEN不代表实际Android整合/完整回归/两审；当前仍是同一writer继续transport/codec/editor/coordinator。
+- 已明确drain合同：关闭配置阻新child/自动扫描，不阻已经接纳exact child下一安全恢复slice；同一child在原gate下可取得后续有限slice用于OFF→ON，未知authority只观察，quarantine/exhaustion停续锁。此为原保留恢复要求的消歧，不授权无界续锁或清fence。
+- 父实际解析`/tmp/btreset-task2-fresh-99qxcjft/full-regression-first`保存XML/log：41suite/573tests/8failure/0error/0skipped，compile通过、完整JVM任务失败，14秒。失败分布：新增Android接线source guard1、原Details目标标记1、ManualFeedback目标摘要3、RuntimeAudit目标摘要3；后六均由期望已知true/false收到未知null；实现者将Details归因为旧无名MAC标记，尚待父直接diff核验。实现者正在按完整名称精确匹配合同给原真实观察fixture注入冻结目标/更新直接取代的标记断言。父已要求逐例记录准确suite/case及前后差异，不接受放宽native/retirement/ledger/receiver/预算。该失败阶段不算Task2验收；fresh完整GREEN/debug/lint及独立两审仍待完成。
+- 父随后实际核验保存的`full-debug-lint-first`：41suite/574tests/0failure/error/skipped、原424准确名称全保留、assembleDebug/lintDebug均执行，exit0、29秒、73/73任务执行。lint仍14条（13Warning+1Fatal ExpiredTargetSdkVersion，MissingPermission0/Error0），不称lint-clean。该阶段之后writer新增startup清理/有限窗口真实恢复测试，因此此GREEN仅为历史阶段，不是最终源码验收。
+- 父实际核验保存的`startup-cleanup-recovery-green`：4suite/33tests/0failure/error/skipped、exit0、11秒、26/26任务执行；XML含七触发组合、配置falsecommit不清安全fence、drain下同一child后续slice、实际引擎OFF→ON跨有限slice、lease过期/native迟到proof、throwing-stop清理与host-timeout拒绝等准确case。尚未直接审查这些新增测试的production使用，最终全量fresh/freeze/两审仍待完成。已向writer提供原88/424公开contract与Task1六文件freeze，同时要求保留其96文件更宽inventory、不删wrapper凑数。
+- Task2 writer实际DONE_WITH_CONCERNS（仅原lint及未做Android设备/Robolectric），父直接检查git scope：13个原app/test文件修改、8个生产+6个测试新文件，父plan另有执行记录；ResetService/build/README/CI/wrapper/AIDL/native/driver/engine/SDK/retirement源未改，根design未动。尚未commit/改版本/签名构建/推送。
+- 父独立解析`full-final`实际XML/log/exitcode：41suite/583tests/0failure/error/skipped、准确原424+Task191全保留，新增68/删除0；23秒、73/73任务执行，assembleDebug/lintDebug均真实执行。当前111文件hash全部匹配冻结（初始96+新增14+原CI子集1），六Task1hash不变；旧88对比仅13允许路径变化；保存debug APK实际hash核对一致，rootdesign仍a008ac15…，临时signing.properties确实不存在。lint仍原14/13Warning+1Fatal，不称clean。父第一次核验把final-hashes误当dict导致parser断言失败，读取公开格式发现实际为111条absolute path/sha256数组后修正，仅父parser问题，不是产品RED。
+- 父逐阶段实际XML/log审计32个TDD阶段，报告`/tmp/btreset-1.4-parent-task2-evidence-e9qj9ahq/verified-tdd-stages.json`：16个断言失败阶段（其中secondary guard/旧产品规则失败仍独立标识，不都冒称policyRED）、11GREEN、4个fixture混合/NPE阶段不计行为RED、1个编译失败+陈旧XML阶段完全排除。writer七个直接取代case的准确前后差异已读取，正在由fresh独立SPEC代理直接核验源码/测试而非信任报告；当时SPEC尚未返回，不提前启动QUALITY或标记Task2完成。
+- Fresh独立SPEC返回FAIL，实际确认生产seam使用/全部七个原产品测试差异正确且安全正文/预算保留，但发现四个实际接线缺口。父直接Read对应范围确认：coordinator预检/实际scanner-entry无drain新SCAN门；recoverForeground仅recovery gate、未拒QUARANTINED续锁；VisibleDetailsSubscription.publish的snapshot生产在catch外，可使真实accepted变false或跳过扫描完成清理；两个Android handler.postDelayed适配丢Boolean false，未进入已有调度失败清理。已交同一Task2 writer逐项真实RED/GREEN修复、再fresh全量/freeze，待原SPEC复审；QUALITY继续未启动。
+- 修复边界明确：drain只撤not-yet-entered exact-child scan准入，不撤accepted truth/cooldown/冻结目标/已入场工作及OFF→ON slice；worker不得不安全读取main-owned host/store/gate。quarantine/exhaustion结束续锁及exact child有限宿主路径，保留pending/native隔离/原late completeAndRearm；snapshot producer与observer均presentation-only；host/work两个真实适配都覆盖postDelayed=false，不仅fake throw。无engine/SDK/native/retirement/旧预算或六Task1修改授权。
+- 父再次实际核验旧三版持久APK及原备份，报告`/tmp/btreset-1.4-task2-originals-WGVbWGuv/originals.json`：1.1/1.2/1.3包名、版本、大小、原hash和单一7825cc…证书均不变；freshBuildFor1_4=false。不冒称新1.4签名构建或真机成功。
+- 同一Task2 writer四项窄修实际DONE，公开资料`/tmp/btreset-task2-spec-fixes-7NPkMz`；已恢复原SPEC审查者直接复审四个根因及连带边界，当时尚无复审结果，QUALITY未启动。版本仍1.3/code4，Task2未提交；不是新1.4交付。
+- 父独立核验新保存证据，报告`/tmp/btreset-1.4-parent-spec-fix-evidence-dy1g7glf/verification.json`：实际42suite/602tests/0failure/error/skipped，历史583及原424+Task191准确名称全保留，新增19/删除0；111文件当前hash与构建前后freeze全匹配，六Task1及inventory不变。实际日志为BUILD SUCCESSFUL in 30s、73/73任务执行，assembleDebug/lintDebug均执行；新flat目录没有exit-code文件，父最初错误假定有该文件导致FileNotFoundError，已修父解析器并明确报告缺少独立保存exitcode，不补造证据、不当产品RED。lint实际仍14项（13Warning+1Fatal ExpiredTargetSdkVersion，MissingPermission/Error0），rootdesign和保存debug APK hash核对一致。这是实现者保存证据的父核验，尚不替代两审通过后的父fresh回归。
+- 新TDD阶段实际XML/log SHA及准确失败类型全部匹配：boolean-timeout-red 30tests/3AssertionError，lifecycle-renewal-red 12/2，scan-drain-red 25/5，snapshot-producer-red 23/2，scan-publication-red-producer-green 32/2，均compile-through真实断言失败；对应聚焦GREEN及602完整GREEN保留。中间host-retention阶段46/1NPE明确排除行为RED，不放宽原测试或预算；实际修复源码和测试生产使用仍待原SPEC复审及fresh QUALITY。
+- 原SPEC审查者四项修复复审实际SPEC PASS：直接追踪atomic exact-child permit在OFF提交前撤销、delayed ready及final worker entry；terminalstage阻续锁且原late proof保留；snapshot生产/observer及scan done异常隔离；两个实际Boolean Handler适配均接现有失败清理。确认11个修复路径、111freeze、六Task1保持，修复期间无旧测试正文变化，七个原直接取代产品case仍精确且安全预算保留。审查者未构建或执行设备测试，不由602数量替代源码论证；SPEC PASS后才启动fresh只读QUALITY，当前QUALITY和父fresh仍待完成，Task2不提前提交/勾选。
+- 父在QUALITY只读期间独立检查公开verifier解析器及保存debug APK，不重复runtime语义审查：`/tmp/btreset-1.4-parent-verifier-parser-ol2wddwp/parser-check.json`确认实际编译scope恰为111、声明@Test与实际42suite/602case完整相等；`/tmp/btreset-1.4-parent-debug-wiring-axdd8yif/debug-wiring.json`实际aapt树确认NoDisplay、原组件及新nonexported connectedDevice监控组件/WAKE_LOCK、无boot/INTERNET，DEX实际42个监控/设置/target/host/candidate/entry/timeout核心定义存在，retired两类不存在（debug为3DEX/1720定义）。据真实类名扩大最终verifier requiredClasses，不猜名字。此debug检查不验证正式签名、1.4、设备或锁屏；父fresh runner仅native Write并语法检查，未在QUALITY结果前执行Gradle。
+- Fresh QUALITY实际FAIL、一项Important：匹配扫描持久OFF_READY后exact stopScan清理永久阻塞，初始slice完成使原30秒callback失效；recoverForeground被retirement gate挡住、每秒tick不调用engine.observe，故不会到原exhaustion；关闭master仍有child阻host stopIfIdle，产生无界child/foreground等待。审查明确不是WakeLock泄漏或未授权开关。父直接Read Coordinator295—337/450—555/612—628及HostedWork107—111/155—177确认根因，已交同一writer新增生产使用的有限、不续期blocked-handoff界限及真实RED/GREEN；仅释放exact绑定/准入/托管，保留原pending/retirement/native隔离/恢复alarm/lateproof，不能为了停服务清除安全状态。修复后原SPEC→同QUALITY复审，父fresh与Task3继续未执行。
+- 同一writer报告三路径有限handoff实现并开始全量/freeze，父仅核验已完成的公开聚焦阶段`/tmp/btreset-task2-handoff-bound-X9venl`：handoff-assertion-red实际1suite/8tests/5AssertionError、无error/skipped，compile成功后12秒/26任务全执行失败；handoff-green实际6suite/49tests/0failure/error/skipped、12秒/26任务全执行成功。五个RED覆盖hung/failed retirement、timeout enqueue false/throw、坏clock及后续重阻塞不续期/lateproof；scaffold编译阶段排除行为RED。当时全量与源码freeze仍由writer执行，未提前审查、标完成、并行Gradle或改版本。
+- writer handoff窄修实际DONE，仅HostedWork/Coordinator/MonitorHostTest三路径；已恢复原SPEC只读复审，质量复审仍须等SPEC PASS。父报告`/tmp/btreset-1.4-parent-handoff-evidence-r2ltfy1s/verification.json`独立核验完整`full-final-111`实际exit0、23秒/73任务全执行、43suite/610tests/0failure/error/skipped，准确原602全保留、+8/-0，声明@Test与执行名称相等。111源码hash构建前后/当前一致、六Task1不变，仅三路径差异，保存debug APK SHA和新增MonitorRecoveryHandoff实际DEX定义通过；lint仍14项、不称clean，version仍1.3/code4。该root的final-hashes.json是公开证据文件hash字典；111源码数组实际在source-before/after-final.json，父按实际格式解析。公开两个repo build properties继续hash/copy，不显示内容/改动，不涉及private/signing properties；此是既有scope澄清，无权限拒绝/升级。父fresh、Task2提交、Task3和正式APK仍未执行。
+- 原SPEC handoff复审实际PASS：直接确认独立exact-child15秒非续期无锁等待、ready不截断已恢复OFF→ON、后来reblock仍复用原deadline；Coordinator实际blocked/ready/expiry接线主线程限定，仅释放托管不改pending/retirement/native/恢复alarm/lateproof。三路径/111freeze/六Task1和其他安全预算保持；移除新增测试class即重现旧MonitorHostTest全部字节，四个先前SPEC修复及七个合法旧产品差异保持。审查未运行构建/设备；实际SPEC PASS后才恢复同QUALITY审查者复审其Important，仍不提前父fresh/提交/改版本。
+- 同QUALITY handoff复审实际PASS：原无界blocked-handoff Important已解决，无新Critical/Important/actionable Minor；直接追踪exact15秒非续期deadline、actual Coordinator有限清理、ready/后来reblock/staleidentity/falseenqueue/坏clock及lateproof。明确末个接线测试是source guard而非可执行Android Coordinator；集成结论来自源码追踪，非610数量或真机证明。实际两审后父fresh`/tmp/btreset-1.4-parent-task2-final-ki09yq70`完整强制testReleaseUnitTest/assembleDebug/lintDebug exit0、23秒、73/73任务执行、43suite/610tests/0failure/error/skipped；111hash前后相同、六Task1和原424名称保持，全部声明与执行case相等，lint仍14不称clean。按实际两审及父fresh/scope/hash标Task2完成；接着允许列表提交，Task3身份/文档及正式签名仍待执行。

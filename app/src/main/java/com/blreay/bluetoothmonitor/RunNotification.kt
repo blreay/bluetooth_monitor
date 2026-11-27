@@ -123,7 +123,7 @@ object DetailsText {
                 append("BLE 实际注册进入：${time(result.scanStartedAt)}；注册返回：${time(result.scanReturnedAt)}；观察结束：${time(result.scanEndedAt)}\n")
                 append("本次广播 ${result.devices.size} 个${if (result.overflow) "（超过100，额外设备未保留）" else ""}；只展示，不自动开启/连接/配对/重置\n")
                 result.devices.forEach {
-                    val marker = if (BandMatcher.isTarget(it.mac, it.advertisementName)) "【目标手环，仅展示】 " else ""
+                    val marker = if (snapshot.manualScanTarget?.matches(it.advertisementName) == true) "【目标手环，仅展示】 " else ""
                     append("$marker${it.name} ${it.mac} RSSI=${it.rssi ?: "未知"} ${it.types.joinToString("/")}\n")
                 }
             }
@@ -142,6 +142,8 @@ object RunNotification {
     const val ONGOING_ID = 102
     private const val ONGOING_CHANNEL = "bt_reset_work"
     private const val HISTORY_CHANNEL = HistoryNotificationRetirement.CHANNEL
+    const val MONITOR_ID = 106
+    private const val MONITOR_CHANNEL = "bt_monitor_automatic"
     private fun prefs(context: Context) = context.getSharedPreferences("bt_reset_details", Context.MODE_PRIVATE)
 
     fun authorization(context: Context, status: String) {
@@ -155,7 +157,7 @@ object RunNotification {
         val p = prefs(context)
         return (p.getString("body", "尚无运行结果；尚未切换蓝牙") ?: "") +
             "\n\n当前授权状态（与实际使用方式独立）：" + p.getString("auth", "未知") +
-            "\n\n仅当前广播命中 Xiaomi Smart Band 8 35BA 才重启手机蓝牙。不配对/连接手环，无定时/开机监控。通知可能被系统禁用；闹钟受 Doze/OEM 限制，force-stop/重启后的恢复不保证。"
+            "\n\n仅当前广播名与本次接受时冻结的完整目标名完全相同才重启手机蓝牙。不配对/连接手环；定时/亮屏/灭屏为独立可选来源，空闲监控宿主不是蓝牙操作。通知可能被系统禁用；周期/恢复闹钟受 Doze/OEM 限制，force-stop/重启后不自动复活、不保证恢复。"
     }
     fun message(context: Context, title: String, body: String) = post(context, title, body)
     /** Rejection/storage notices never replace the identity/result of an ongoing automatic/manual operation. */
@@ -220,6 +222,19 @@ object RunNotification {
                 .setStyle(Notification.BigTextStyle().bigText(body)).setContentIntent(content).setDeleteIntent(delete)
                 .setOngoing(false).setAutoCancel(false).setSound(null).setVibrate(null).setDefaults(0).setOnlyAlertOnce(true).build())
         } catch (e: Exception) { Log.w(TAG, "history notification unavailable; checked row retained", e) }
+    }
+    fun monitor(context: Context): Notification {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager?.createNotificationChannel(NotificationChannel(MONITOR_CHANNEL, "自动监控宿主", NotificationManager.IMPORTANCE_LOW)
+            .apply { setSound(null, null); enableVibration(false) })
+        val content = PendingIntent.getActivity(context, MONITOR_ID,
+            Intent(context, PermissionActivity::class.java).setAction("${context.packageName}.action.MONITOR_DETAILS")
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        return Notification.Builder(context, MONITOR_CHANNEL).setSmallIcon(R.drawable.ic_stat_bluetooth)
+            .setContentTitle("自动监控宿主运行中").setContentText("空闲不持有唤醒锁；仅命中本次完整目标广播才重置；点击编辑设置与查看状态")
+            .setContentIntent(content).setOngoing(true).setOnlyAlertOnce(true).setSound(null).setVibrate(null).setDefaults(0)
+            .setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE).build()
     }
     fun ongoing(context: Context, owner: ForegroundAdmission.Owner = ForegroundAdmission.Owner.AUTOMATIC): Notification {
         ensureChannels(context)

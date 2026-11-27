@@ -15,10 +15,11 @@ class DiscoveredDevices(private val limit: Int = Int.MAX_VALUE) {
         if (address.isEmpty()) return
         val old = devices[address]
         if (old == null && devices.size >= limit) { overflow = true; return }
-        val actualName = name?.trim()?.takeIf { it.isNotEmpty() }
+        val actualName = name
+        val displayName = name?.trim()?.takeIf { it.isNotEmpty() }
         devices[address] = Device(
             address,
-            actualName ?: old?.name ?: "未知设备",
+            displayName ?: old?.name ?: "未知设备",
             rssi ?: old?.rssi,
             (old?.types ?: emptySet()) + type,
             actualName ?: old?.advertisementName,

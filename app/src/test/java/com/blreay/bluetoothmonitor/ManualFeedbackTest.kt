@@ -58,7 +58,7 @@ class ManualFeedbackTest {
         val operation = f.start(ManualAction.SCAN)
         val events = requireNotNull(f.runtime.scan)
         val lease = requireNotNull(f.runtime.scanLease)
-        val observation = ScanSummaryObservation()
+        val observation = ScanSummaryObservation(TargetSnapshot(1L, BandMatcher.TARGET_NAME)) // explicit acceptance-frozen configuration
         val window = ManualObservationWindow()
         val devices = DiscoveredDevices(100)
         val owner = ExactScannerOwner<ScanRegistrationRetirement.Ticket> { it }

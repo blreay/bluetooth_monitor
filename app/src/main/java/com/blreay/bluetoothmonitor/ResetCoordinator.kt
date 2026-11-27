@@ -5,12 +5,16 @@ import android.content.Context
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import java.util.UUID
 
 /** Sole main-looper owner across launcher, service, receivers, details, and exact late RPC callbacks. */
 class ResetCoordinator(private val app: Context, private val audit: AuditSink = MibandLog) {
     private val handler = Handler(Looper.getMainLooper())
+    private val monitorLater: (Long, () -> Unit) -> Unit = { delay, task ->
+        MonitorTimeoutScheduling.post(delay, task) { ms, callback -> handler.postDelayed(callback, ms) }
+    }
     private val store = PendingResetStore.persistence(app)
     private val ownership = RunOwnership()
     private val admission = ForegroundAdmission({ SystemClock.elapsedRealtime() }, 4_000L) { cancelScanFor(it) }
@@ -57,24 +61,66 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
     }
     private var scan: BandResetController? = null
     private var scanRun: String? = null
-    private var serviceTicket: ForegroundAdmission.Ticket? = null
-    private var serviceStartId = 0
+    private val foreground = OperationForegroundOwner()
+    private val serviceTicket get() = foreground.binding?.operation
+    private val serviceStartId get() = (foreground.binding as? OperationForegroundBinding.ResetServiceOwner)?.originalStartId
+    private var activeTarget: TargetSnapshot? = null
+    private var manualScanTarget: TargetSnapshot? = null
+    private var manualScanTargetOperation: String? = null
     private var activeRun: String? = null
     private var startupSettled = false
     private var setupWait: (() -> Unit)? = null
     private var waitingForSetup = false
     private var wantsToast = false
-    private var serviceDone: (() -> Unit)? = null
-    private var serviceRun: String? = null
+    private val serviceDone: (() -> Unit)? get() = foreground.binding?.let { binding ->
+        when (binding) {
+            is OperationForegroundBinding.ResetServiceOwner -> binding.done
+            is OperationForegroundBinding.MonitorChild -> ({ automatic.host.releaseChild(binding.child); publishDetails() })
+        }
+    }
+    private val serviceRun get() = foreground.binding?.operation?.runId
     private var commandBusy: String? = null
     private var latestNotice: String? = null
     private var tickBusy = false
     private var foregroundUnavailableUntil = 0L
     private var serviceLease: CommandLease? = null
+    private val monitorAlarms = AndroidMonitorAlarm(app)
+    private val monitorHost = MonitorHostLifetime { SystemClock.elapsedRealtime() }
+    private val automaticStore = CheckedAutomaticSettingsStore(MonitorSettingsWriteHandoff(AutomaticSettingsPreferences(app),
+        { monitorHost.revokeNewScan() }))
+    val automatic = AutomaticMonitorController(automaticStore,
+        AutomaticMonitorScheduler(automaticStore, monitorAlarms) { SystemClock.elapsedRealtime() }, monitorAlarms, monitorHost,
+        object : AutomaticMonitorRuntime {
+            override fun busy() = !gate.newRequest() || commandBusy != null
+            override fun startHost(start: MonitorHostStart) = MonitorService.tryStart(app, start)
+            override fun later(delay: Long, task: () -> Unit) { monitorLater(delay, task) }
+            override fun dispatch(target: TargetSnapshot) = admitMonitorChild(target)
+            override fun childGone(child: MonitorChildTicket) = monitorChildGone(child)
+        }, { publishDetails() })
+    private val monitorWork = MonitorHostedWork(monitorHost, { SystemClock.elapsedRealtime() }, {
+        val power = app.getSystemService(PowerManager::class.java) ?: throw IllegalStateException("PowerManager unavailable")
+        val wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BtReset:monitor-task").apply { setReferenceCounted(false) }
+        object : MonitorTaskLock {
+            override fun acquire(timeoutMs: Long) { wakeLock.acquire(timeoutMs) }
+            override fun release() { if (wakeLock.isHeld) wakeLock.release() }
+        }
+    }, monitorLater, { slice ->
+        if (foreground.childCurrent(slice.child)) {
+            cancelScanFor(slice.child.operation.runId) // observation retirement only, never native cancellation/proof
+            if (store.snapshot().pending == null) finishService() else scheduleServiceTick()
+        }
+    })
+    private val monitorHandoff = MonitorRecoveryHandoff(foreground, { SystemClock.elapsedRealtime() }, monitorLater, { child ->
+        if (foreground.childCurrent(child)) {
+            releaseRun(child.operation.runId)
+            finishService() // hosting expiry is never pending/scanner/native authority-end evidence
+        }
+    })
+    private val scanCandidates = ManualScanCandidates { publishDetails() }
     private val runStartElapsed = mutableMapOf<String, Long>() // process-local only; absent after restart means duration UNKNOWN
     private val serviceTick = Runnable {
         if (serviceTicket?.owner == ForegroundAdmission.Owner.AUTOMATIC && serviceDone != null)
-            recoveryStep(serviceLease ?: CommandLease.foreground(), false) { scheduleServiceTick() }
+            recoverForeground { scheduleServiceTick() }
     }
     private val setupPrefs get() = app.getSharedPreferences("bt_reset_setup", Context.MODE_PRIVATE)
     private fun operationAdmission(): OperationAdmission {
@@ -104,7 +150,9 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             if (s.storageFailed || s.integrityBlocked || s.pending != null || s.manualFence?.operationId != operation.operationId) {
                 events.finished("安全存储/手动身份不可确认；未开始扫描", true); return
             }
-            val scanner = ManualBleScanner(app, operation, lease, retirement, events)
+            manualScanTarget = automatic.targetSnapshot()
+            manualScanTargetOperation = operation.operationId
+            val scanner = ManualBleScanner(app, operation, lease, retirement, events, manualScanTarget)
             manualScanners.install(operation.operationId, scanner)
             scanner.start()
         }
@@ -114,11 +162,23 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             if (serviceTicket?.owner == ForegroundAdmission.Owner.MANUAL && serviceRun == operationId) finishService()
         }
     }, { System.currentTimeMillis() }, { SystemClock.elapsedRealtime() }, { UUID.randomUUID().toString() }, { publishDetails() },
-        feedback = { value -> Notifier.always(app, value.conciseMessage()) }, audit = audit)
+        feedback = { value -> Notifier.always(app, value.conciseMessage()) }, audit = audit, candidates = scanCandidates)
     init { client.start() }
 
-    fun detailsSnapshot() = DetailsSnapshot(store.snapshot(), RunNotification.details(app), client.status,
-        manual.activeResult(), manual.rejectionNotices(), latestNotice)
+    fun detailsSnapshot(): DetailsSnapshot {
+        val snapshot = store.snapshot()
+        val activeManual = manual.activeResult()
+        val displayedScan = activeManual?.takeIf { it.action == ManualAction.SCAN } ?: snapshot.manualResults[ManualAction.SCAN]
+        return DetailsSnapshot(snapshot, RunNotification.details(app), client.status,
+            activeManual, manual.rejectionNotices(), latestNotice, automatic.snapshot(), scanCandidates.snapshot(),
+            manualScanTarget.takeIf { displayedScan?.operationId == manualScanTargetOperation }, monitorAlarms.snapshot())
+    }
+    fun saveAutomatic(expected: Long?, draft: AutomaticMonitorSettings, visible: Boolean): AutomaticSettingsSave {
+        requireMain(); return automatic.configure(expected, draft, visible)
+    }
+    fun automaticVisibleOpportunity() { requireMain(); automatic.visibleOpportunity() }
+    fun exactAlarmAccess(): Boolean = monitorAlarms.exactAccess()
+    fun batteryOptimizationIgnored(): Boolean = app.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(app.packageName) == true
     fun subscribeDetails(observer: (DetailsSnapshot) -> Unit): Long { requireMain(); return subscriptions.attach(observer) }
     fun unsubscribeDetails(token: Long) { requireMain(); subscriptions.detach(token) }
     fun publishDetails() { requireMain(); subscriptions.publish() }
@@ -148,8 +208,14 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             notice("新运行未执行", "已有运行/待恢复/手动或扫描清理隔离，或存储不可确认；立即拒绝，不排队/替换")
             return
         }
+        val target = automatic.targetSnapshot()
+        if (s.pending == null && (automatic.snapshot().settings.blocked || target == null)) {
+            notice("自动目标配置不可确认", "本次未扫描/开关；未知计数或损坏配置不重置为默认值，原安全恢复不受影响")
+            return
+        }
         val id = s.pending?.runId ?: UUID.randomUUID().toString()
         if (!ownership.acquire(id)) return
+        activeTarget = target
         activeRun = id; wantsToast = verbose; startupSettled = false
         val needsNearby = !BtPermissions.allGranted(app)
         val setupNecessary = !setupPrefs.getBoolean("notification_setup_seen", false) ||
@@ -163,7 +229,10 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
                 else if (needsNearby) {
                     notice("缺少附近设备权限", "未扫描、未开关蓝牙；此前已拒绝，不重复弹窗。点击通知详情可显式申请或打开设置")
                     releaseRun(id)
-                } else if (!tryForeground(id) && startupSettled) continueStartup(id)
+                } else {
+                    automatic.visibleOpportunity() // still inside the actual NoDisplay onCreate dispatch opportunity
+                    if (!tryForeground(id) && startupSettled) continueStartup(id)
+                }
             }, ready = delivered@{ capability ->
                 if (!ownership.current(id) || !gate.automaticContinuation(id, activeRun, true)) return@delivered
                 startupSettled = true
@@ -193,7 +262,7 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             scan != null || admission.waiting(id)) return
         if (engine.read() != null) {
             notice("继续上次恢复", "存在持久化待恢复记录；不会开始新扫描/OFF")
-            if (serviceDone != null) recoveryStep(serviceLease ?: CommandLease.foreground(), false) { scheduleServiceTick() }
+            if (serviceDone != null) recoverForeground { scheduleServiceTick() }
             else {
                 ReEnableScheduler.armNextTick(app)
                 recoveryStep(CommandLease({ SystemClock.elapsedRealtime() }, SystemClock.elapsedRealtime() + 8_000L), true) { releaseRun(id) }
@@ -217,8 +286,14 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             notice("广播新运行未执行", "已有运行/恢复/手动/扫描清理或存储隔离；不排队/替换")
             done(); return
         }
+        val target = automatic.targetSnapshot()
+        if (automatic.snapshot().settings.blocked || target == null) {
+            notice("自动目标配置不可确认", "广播未扫描/开关；不使用虚构默认目标，原安全恢复不受影响")
+            done(); return
+        }
         val id = UUID.randomUUID().toString()
         if (!ownership.acquire(id)) { done(); return }
+        activeTarget = target
         activeRun = id; wantsToast = verbose; startupSettled = true
         if (tryForeground(id)) { done(); return }
         startScan(id, TriggerReceiver.RECEIVER_SCAN_TIMEOUT_MS, lease, done)
@@ -226,13 +301,19 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
     private fun startScan(id: String, window: Long, lease: CommandLease, done: () -> Unit) {
         if (!ownership.current(id) || !gate.automaticContinuation(id, activeRun) || scan != null ||
             store.snapshot().pending != null || !lease.valid()) { done(); return }
+        val monitorBinding = foreground.binding as? OperationForegroundBinding.MonitorChild
+        val scanPermit = monitorBinding?.takeIf { it.operation.runId == id }?.let { monitorHost.scanPermit(it.child) }
+        if (monitorBinding != null && (scanPermit == null || !scanPermit.eligible(monitorBinding.child))) {
+            done(); releaseRun(id); finishService(); return
+        }
         if (retirement.blocked()) {
             retirement.retryRetirement()
             notice("旧扫描清理尚未确认", "本次未扫描/开关；只重试原注册失败清理，不覆盖安全隔离")
             done(); releaseRun(id); finishService(); return
         }
+        val target = activeTarget ?: run { done(); releaseRun(id); finishService(); return }
         RunNotification.beginScan(app); publishDetails()
-        val controller = BandResetController(app, ownership, id, lease, retirement, audit) { match ->
+        val controller = BandResetController(app, ownership, id, lease, retirement, target, audit, scanPermit) { match ->
             if (!ownership.current(id) || !gate.automaticContinuation(id, activeRun) || !lease.valid()) false
             else {
                 match.scanStartedElapsed?.let { runStartElapsed[id] = it }
@@ -247,13 +328,19 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
         scan = controller; scanRun = id
         controller.run(window, wantsToast) { result ->
             if (scan === controller) { scan = null; scanRun = null }
-            controller.lastReport?.let { r -> RunNotification.fastPhase(app, result, r.facts, r.matchedLabel, r.nearMissSample, r.adapterState) }
-            publishDetails(); done()
-            if (!ownership.current(id)) return@run
-            if (result == BandResetController.Result.RESET_TRIGGERED) {
-                if (serviceDone != null) recoveryStep(serviceLease ?: CommandLease.foreground(), false) { scheduleServiceTick() }
-                else releaseRun(id)
-            } else { releaseRun(id); finishService() }
+            AutomaticScanCompletionDelivery.finish({
+                controller.lastReport?.let { r -> RunNotification.fastPhase(app, result, r.facts, r.matchedLabel, r.nearMissSample, r.adapterState) }
+                publishDetails()
+            }, done, settle@{
+                if (!ownership.current(id)) return@settle
+                (foreground.binding as? OperationForegroundBinding.MonitorChild)?.takeIf { it.operation.runId == id }?.let { binding ->
+                    monitorWork.activeSlice()?.takeIf { it.child === binding.child }?.let { monitorWork.finish(it) }
+                }
+                if (result == BandResetController.Result.RESET_TRIGGERED) {
+                    if (serviceDone != null) recoverForeground { scheduleServiceTick() }
+                    else releaseRun(id)
+                } else { releaseRun(id); finishService() }
+            })
         }
     }
     private fun cancelScanFor(id: String) {
@@ -281,7 +368,7 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
     fun serviceStarted(ticket: ForegroundAdmission.Ticket, startId: Int, done: () -> Unit) {
         requireMain()
         if (!serviceAdmissionCurrent(ticket) || !admission.accept(ticket)) { done(); return }
-        serviceTicket = ticket; serviceStartId = startId; serviceRun = ticket.runId; serviceDone = done
+        if (!foreground.installOriginal(ticket, startId, done)) { admission.end(ticket); done(); return }
         serviceLease = if (ticket.owner == ForegroundAdmission.Owner.MANUAL)
             CommandLease({ SystemClock.elapsedRealtime() }, SystemClock.elapsedRealtime() + ManualOperationController.WORK_WINDOW_MS)
         else CommandLease.foreground()
@@ -292,10 +379,11 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
     }
     fun serviceGone(ticket: ForegroundAdmission.Ticket, startId: Int) {
         requireMain()
-        if (serviceTicket != ticket || serviceStartId != startId || !admission.admitted(ticket)) return
+        if (!foreground.originalCurrent(ticket, startId) || !admission.admitted(ticket)) return
+        val binding = foreground.binding ?: return
         handler.removeCallbacks(serviceTick)
         serviceLease?.cancel(); serviceLease = null
-        serviceDone = null; serviceRun = null; serviceTicket = null; serviceStartId = 0
+        foreground.clear(binding)
         admission.end(ticket)
         if (ticket.owner == ForegroundAdmission.Owner.MANUAL) manual.serviceEnded(ticket.runId)
         else if (activeRun == ticket.runId) releaseRun(ticket.runId)
@@ -313,10 +401,81 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
             report(pending, AdapterState.UNKNOWN, "恢复闹钟安排失败；未派发新命令，保留记录", true); done(); return
         }
         if (serviceDone != null && serviceTicket?.owner == ForegroundAdmission.Owner.AUTOMATIC) {
-            recoveryStep(serviceLease ?: lease, false) { scheduleServiceTick() }; done(); return
+            recoverForeground { scheduleServiceTick() }; done(); return
         }
         if (BtPermissions.allGranted(app) && tryForeground(pending.runId)) { done(); return }
         recoveryStep(lease, true, done)
+    }
+    private fun admitMonitorChild(target: TargetSnapshot): Boolean {
+        requireMain()
+        val id = UUID.randomUUID().toString()
+        var initial: MonitorWorkSlice? = null
+        val child = MonitorChildAdmission.accept(admission, monitorHost, target, id,
+            { gate.newRequest() && commandBusy == null && BtPermissions.allGranted(app) }, {
+                if (!ownership.acquire(id)) false else {
+                    activeRun = id; activeTarget = target; startupSettled = true; waitingForSetup = false; wantsToast = false
+                    true
+                }
+            }, { releaseRun(id) }, { ticket -> serviceAdmissionCurrent(ticket) }, { child, frozen ->
+                if (!foreground.installMonitor(child, frozen)) false else {
+                    initial = monitorWork.initial(child)
+                    if (initial == null) { finishService(); false } else true
+                }
+            }) ?: return false
+        val slice = initial ?: return false
+        // Existing bounded readiness only: NO startup/human authorization wait/dialog in this task window.
+        MonitorChildAdmission.startAccepted(child, { actual ->
+            client.preflight(slice.lease, 5_000L) ready@{ _ ->
+                if (!foreground.childCurrent(actual) || !monitorHost.ownsChild(actual)) return@ready
+                if (!slice.lease.valid() || !gate.automaticContinuation(id, activeRun) || !monitorHost.newScanEligible(actual)) {
+                    releaseRun(id); finishService(); return@ready // accepted truth remains; only the not-entered scan is drained
+                }
+                startScan(id, ResetService.SCAN_TIMEOUT_MS, slice.lease) { }
+            }
+        }, { failed ->
+            if (foreground.childCurrent(failed)) {
+                latestNotice = "本次已接管监控任务的有界准备失败；未借用后台授权界面或重试新扫描"
+                releaseRun(id); finishService()
+            }
+        })
+        publishDetails()
+        return true // actual admission + exact child + binding + finite task lock, never merely a host request
+    }
+    private fun monitorChildGone(child: MonitorChildTicket) {
+        requireMain()
+        if (!foreground.childCurrent(child) || !admission.admitted(child.operation)) return
+        val binding = foreground.binding ?: return
+        foreground.clear(binding)
+        handler.removeCallbacks(serviceTick)
+        monitorHandoff.cancel(child)
+        monitorWork.cancel(child)
+        admission.end(child.operation)
+        cancelScanFor(child.operation.runId)
+        if (activeRun == child.operation.runId) releaseRun(child.operation.runId)
+        publishDetails() // external host destruction is NEVER native authority-ended evidence
+    }
+    private fun recoverForeground(done: () -> Unit) {
+        val binding = foreground.binding as? OperationForegroundBinding.MonitorChild
+        if (binding == null) { recoveryStep(serviceLease ?: CommandLease.foreground(), false, done); return }
+        val pending = engine.read() ?: run { finishService(); done(); return }
+        if (!MonitorRecoveryAdmission.permits(binding.child, pending)) {
+            finishService(); done(); return // finite host child ends, original pending/fence/late proof remains untouched
+        }
+        if (!gate.recovery(pending.runId)) {
+            if (!monitorHandoff.blocked(binding.child)) { done(); return }
+            if (!store.snapshot().storageFailed && !store.snapshot().integrityBlocked) ReEnableScheduler.armNextTick(app)
+            else finishService()
+            publishDetails(); done(); return
+        }
+        if (!monitorHandoff.ready(binding.child)) { done(); return }
+        if (tickBusy || monitorWork.activeSlice() != null) { done(); return }
+        // A NEW finite slice only at this admitted original recovery-step entrance. No master/source/cooldown gate.
+        val slice = monitorWork.recovery(binding.child, gate.recovery(pending.runId))
+        if (slice == null) { finishService(); done(); return }
+        recoveryStep(slice.lease, false) {
+            monitorWork.finish(slice)
+            if (foreground.childCurrent(binding.child)) done()
+        }
     }
     private fun recoveryStep(lease: CommandLease, constrained: Boolean, done: () -> Unit) {
         val pending = engine.read() ?: run { finishService(); done(); return }
@@ -461,16 +620,23 @@ class ResetCoordinator(private val app: Context, private val audit: AuditSink = 
     }
     private fun finishService() {
         handler.removeCallbacks(serviceTick)
-        val done = serviceDone; val ticket = serviceTicket
-        serviceDone = null; serviceRun = null; serviceTicket = null; serviceStartId = 0
+        val binding = foreground.binding ?: return
+        if (foreground.clear(binding) == null) return
         serviceLease?.cancel(); serviceLease = null
-        ticket?.let { admission.end(it) }
-        done?.invoke()
+        if (binding is OperationForegroundBinding.MonitorChild) {
+            monitorHandoff.cancel(binding.child)
+            monitorWork.cancel(binding.child)
+        }
+        admission.end(binding.operation)
+        when (binding) {
+            is OperationForegroundBinding.ResetServiceOwner -> binding.done()
+            is OperationForegroundBinding.MonitorChild -> { automatic.host.releaseChild(binding.child); publishDetails() }
+        }
     }
     private fun releaseRun(id: String) {
         admission.pendingTicket(id)?.takeIf { it.owner == ForegroundAdmission.Owner.AUTOMATIC }?.let { admission.reject(it) }
         ownership.release(id)
-        if (activeRun == id) { activeRun = null; waitingForSetup = false; setupWait = null }
+        if (activeRun == id) { activeRun = null; activeTarget = null; waitingForSetup = false; setupWait = null }
     }
     private fun requireMain() = check(Looper.myLooper() == Looper.getMainLooper())
     companion object { fun get(context: Context) = (context.applicationContext as MonitorApplication).coordinator }

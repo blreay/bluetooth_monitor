@@ -207,6 +207,80 @@ class DetailsSnapshotTest {
         assertFalse(gate.newRequest()); assertTrue(gate.automaticContinuation("setup", "setup", true))
         assertFalse(gate.automaticContinuation("other", "setup", true))
     }
+    @Test fun `throwing snapshot producer cannot interrupt publication and observers remain usable`() {
+        val value = DetailsSnapshot(CheckedResetStore(MemoryResetStorage()).snapshot(), "status", "auth", null, emptyMap())
+        var broken = true; var produced = 0; var observed = 0; var continued = false
+        val subscriptions = VisibleDetailsSubscription {
+            produced++
+            if (broken) throw IllegalStateException("snapshot producer failed")
+            value
+        }
+        val token = subscriptions.attach { observed++ }
+        try { subscriptions.publish(); continued = true } catch (_: IllegalStateException) { }
+        assertTrue("snapshot construction is presentation, not a runtime cleanup barrier", continued)
+        assertEquals(0, observed)
+        broken = false; subscriptions.publish()
+        assertEquals(1, observed); assertEquals(3, produced)
+        subscriptions.detach(token); subscriptions.publish()
+        assertEquals(3, produced)
+    }
+    @Test fun `snapshot producer failure after actual child acceptance cannot erase cooldown or frozen binding`() {
+        var now = 100L; var disk: AutomaticMonitorRecord? = null
+        val settings = CheckedAutomaticSettingsStore(object : AutomaticSettingsPersistence {
+            override fun read() = disk?.let { AutomaticSettingsRead.Valid(it) } ?: AutomaticSettingsRead.Missing
+            override fun commit(record: AutomaticMonitorRecord): Boolean { disk = record; return true }
+        })
+        val alarms = object : MonitorAlarmPort {
+            override fun arm(ticket: MonitorAlarmTicket, elapsedAt: Long) = true
+            override fun cancel(ticket: MonitorAlarmTicket) { }
+        }
+        val scheduler = AutomaticMonitorScheduler(settings, alarms) { now }
+        assertEquals(AutomaticSettingsSave.SAVED, scheduler.configure(0, AutomaticMonitorSettings(enabled = true, screenOnEnabled = true)))
+        val host = MonitorHostLifetime { now }; host.keepAlive(true); host.started(host.beginStart()!!) { }
+        val admission = ForegroundAdmission({ now }, 4_000L) { }
+        val owner = OperationForegroundOwner(); val locks = mutableListOf<Long>()
+        val work = MonitorHostedWork(host, { now }, { object : MonitorTaskLock {
+            override fun acquire(timeoutMs: Long) { locks.add(timeoutMs) }
+            override fun release() { }
+        } }, { _, _ -> }, {})
+        var broken = true; var observed = 0
+        val subscriptions = VisibleDetailsSubscription {
+            if (broken) throw IllegalStateException("details could not be built")
+            DetailsSnapshot(CheckedResetStore(MemoryResetStorage()).snapshot(), "status", "auth", null, emptyMap())
+        }
+        subscriptions.attach { observed++ }
+        val attempt = scheduler.onScreen(AutomaticTrigger.SCREEN_ON)!!
+        val accepted = scheduler.accept(attempt) { target ->
+            val child = MonitorChildAdmission.accept(admission, host, target, "accepted", { true }, { true }, {},
+                { true }, { actual, frozen -> owner.installMonitor(actual, frozen) && work.initial(actual) != null })!!
+            assertTrue(admission.admitted(child.operation))
+            subscriptions.publish() // same post-admission producer boundary as the coordinator dispatch
+            true
+        }
+        assertTrue("real child acceptance must survive failed snapshot production", accepted)
+        val binding = owner.binding as OperationForegroundBinding.MonitorChild
+        assertTrue(host.ownsChild(binding.child)); assertTrue(admission.admitted(binding.operation))
+        assertEquals(TargetSnapshot(1, "Xiaomi Smart Band 8 35BA"), binding.target)
+        assertTrue(work.activeSlice()!!.lease.valid()); assertEquals(listOf(30_000L), locks)
+        now += 29_999L
+        assertNull("acceptance cooldown must not become an immediate second offer", scheduler.onScreen(AutomaticTrigger.SCREEN_ON))
+        broken = false; subscriptions.publish(); assertEquals(1, observed)
+    }
+    @Test fun `throwing visible observer cannot escape attach or interrupt later observers and runtime cleanup`() {
+        val value = DetailsSnapshot(CheckedResetStore(MemoryResetStorage()).snapshot(), "status", "auth", null, emptyMap())
+        val subscriptions = VisibleDetailsSubscription { value }
+        var failedCalls = 0; var goodCalls = 0; var continued = false
+        try {
+            val bad = subscriptions.attach { failedCalls++; throw IllegalStateException("closed UI") }
+            subscriptions.attach { goodCalls++ }
+            subscriptions.publish()
+            subscriptions.detach(bad)
+            subscriptions.publish()
+            continued = true
+        } catch (_: IllegalStateException) { }
+        assertTrue("presentation is not an authority cleanup barrier", continued)
+        assertEquals(2, failedCalls); assertEquals(3, goodCalls)
+    }
     @Test fun `visible snapshot recreation and closing presentation do not cancel application command`() {
         val f = Fixture(); val op = f.start()
         val old = ManualResult("old-on", ManualAction.ON, ManualResultStatus.COMPLETED, "old actual ON")
@@ -324,19 +398,22 @@ class DetailsSnapshotTest {
             add("55:22:33:44:00:01", "Speaker", -70, "BLE")
         }.snapshot()
         events.devices(devices, false)
-        fun text(store: ResetStoreSnapshot, live: ManualResult? = null) = DetailsText.manual(ManualAction.SCAN,
-            DetailsSnapshot(store, "automatic", "authorization", live, emptyMap()))
+        // Product change: only this process's exact scan target annotates a current full raw name;
+        // nameless packets and cold stored results do not invent a MAC-suffix/default target.
+        fun text(store: ResetStoreSnapshot, live: ManualResult? = null,
+                 target: TargetSnapshot? = TargetSnapshot(1L, BandMatcher.TARGET_NAME)) = DetailsText.manual(ManualAction.SCAN,
+            DetailsSnapshot(store, "automatic", "authorization", live, emptyMap(), manualScanTarget = target))
         fun assertMarkers(rendered: String) {
             assertTrue(rendered.contains("【目标手环，仅展示】 ${BandMatcher.TARGET_NAME} 11:22:33:44:35:BA"))
-            assertTrue(rendered.contains("【目标手环，仅展示】 未知设备 22:22:33:44:35:BA"))
-            for (address in listOf("33:22:33:44:35:BA", "44:22:33:44:35:BA", "55:22:33:44:00:01"))
+            for (address in listOf("22:22:33:44:35:BA", "33:22:33:44:35:BA", "44:22:33:44:35:BA", "55:22:33:44:00:01"))
                 assertFalse(rendered.lines().single { it.contains(address) }.contains("【目标手环"))
         }
         assertMarkers(text(f.store.snapshot(), f.controller.activeResult()))
         events.finished("BLE observation complete", false); events.retired("exact-ticket")
         assertNull(f.store.snapshot().manualFence)
         assertMarkers(text(f.store.snapshot()))
-        assertMarkers(text(CheckedResetStore(f.storage).snapshot()))
+        val coldText = text(CheckedResetStore(f.storage).snapshot(), target = null)
+        assertTrue(coldText.contains(BandMatcher.TARGET_NAME)); assertFalse(coldText.contains("【目标手环"))
         assertTrue(f.runtime.commands.isEmpty()); assertTrue(f.runtime.samples.isEmpty())
         assertNull(f.store.snapshot().pending); assertTrue(f.store.snapshot().history.rows.isEmpty())
         assertEquals(0L, f.store.snapshot().history.total)

@@ -3,6 +3,7 @@ package com.blreay.bluetoothmonitor
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.le.BluetoothLeScanner
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -18,7 +19,9 @@ class BandResetController(
     private val runId: String,
     private val lease: CommandLease,
     private val retirement: ScanRegistrationRetirement,
+    private val target: TargetSnapshot,
     private val audit: AuditSink = AuditSink.NONE,
+    private val scanEntryPermit: MonitorScanEntryPermit? = null,
     private val onMatch: (AcceptedResetMatch) -> Boolean,
 ) {
     enum class Result { NO_ADAPTER, BLUETOOTH_OFF, NEEDS_PERMISSION, NOT_FOUND, DISABLE_FAILED, RESET_TRIGGERED, ERROR }
@@ -31,12 +34,12 @@ class BandResetController(
     private val completion = CompletionGate()
     private var callback: Callback? = null
     private var wantsToast = false
-    private val summaryObservation = ScanSummaryObservation()
+    private val summaryObservation = ScanSummaryObservation(target)
     private fun publishSummary(result: String) {
         val executed = session?.scannerEntered == true
         val phrase = if (!executed && session?.entryPending() == true) "状态未确认" else result
         val value = summaryObservation.close(session?.deviceCount() ?: 0, false, executed, phrase) ?: return
-        audit.event(value.entry())
+        try { audit.event(value.entry()) } catch (_: Exception) { } // annotation is not teardown/authority evidence
     }
 
     private data class Prepared(val adapter: BluetoothAdapter?, val scanner: BluetoothLeScanner?, val state: AdapterState, val bonded: Boolean,
@@ -63,12 +66,7 @@ class BandResetController(
                 else -> {
                     val attempt = Session(prepared.scanner, prepared.bonded)
                     session = attempt
-                    // Bonded-device data is diagnostic only and cannot delay scanner setup/receiver finish.
-                    BoundedBluetoothWork.submit(BoundedBluetoothWork.Lane.DIAGNOSTIC, lease, 500L,
-                        { false }, { false }, {
-                            try { prepared.adapter.bondedDevices?.any { BandMatcher.isTarget(it.address, it.name) } ?: false }
-                            catch (_: SecurityException) { false }
-                        }) { bonded, diagnosticLate -> if (!diagnosticLate && current()) attempt.targetBonded = bonded }
+                    // Filtered current advertisements only; cached/bonded names are not matching evidence.
                     attempt.start(scanTimeoutMs)
                 }
             }
@@ -89,9 +87,9 @@ class BandResetController(
             else if (session?.scannerEntered == true) "失败（部分结果）" else "未执行")
         session?.settled = true
         session?.teardown()
-        Notifier.outcome(context, wantsToast, result.name)
         lastReport = ScanOutcome(facts, matchedLabel, nearMissSample, adapterState)
-        callback?.onResult(result)
+        try { Notifier.outcome(context, wantsToast, result.name) }
+        finally { callback?.onResult(result) }
     }
 
     private inner class Session(private val scanner: BluetoothLeScanner, var targetBonded: Boolean) {
@@ -103,6 +101,7 @@ class BandResetController(
         private var registration: ScanRegistrationRetirement.Ticket? = null
         private var retirementRequested = false
         private var windowMs = 0L
+        @Volatile private var packetWindow: AutomaticPacketWindow? = null
         private var startedAtMs = 0L
         private var startedWall: Long? = null
         private var acceptedAt: Long? = null
@@ -116,16 +115,19 @@ class BandResetController(
         private fun accepting() = current() && !resetInFlight
         private val onTimeout = Runnable { if (accepting()) report(Result.NOT_FOUND) }
         private val scanCallback = object : ScanCallback() {
-            override fun onScanResult(callbackType: Int, result: ScanResult) = advertisement(result, System.currentTimeMillis())
-            private fun advertisement(result: ScanResult, receivedAt: Long) {
-                if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { advertisement(result, receivedAt) }; return }
+            override fun onScanResult(callbackType: Int, result: ScanResult) = advertisement(result, SystemClock.elapsedRealtimeNanos(), System.currentTimeMillis())
+            private fun advertisement(result: ScanResult, receivedElapsedNanos: Long, receivedAt: Long) {
+                if (Looper.myLooper() != Looper.getMainLooper()) { handler.post { advertisement(result, receivedElapsedNanos, receivedAt) }; return }
                 if (!accepting()) return
+                if (packetWindow?.admit(result.timestampNanos, receivedElapsedNanos, SystemClock.elapsedRealtimeNanos()) != true) {
+                    if (packetWindow?.remainingMs(SystemClock.elapsedRealtimeNanos()) == null) report(Result.NOT_FOUND)
+                    return
+                }
                 val mac = try { result.device?.address } catch (_: Exception) { null }
                 val name = try { result.scanRecord?.deviceName } catch (_: Exception) { null }
-                val target = BandMatcher.isTarget(mac, name)
+                if (!target.matches(name)) return // this packet only, never retained/cached display name
                 summaryObservation.admitted(mac, name) // sticky observation precedes claim/arm; not authority
-                record(mac, name, target)
-                if (!target) return
+                record(mac, name) // filtered accepted advertisements only, with no manual collector cap
                 val claimed = ownership.claimMatch(runId)
                 if (!claimed) return
                 // Claim before stopScan: queued/batch results cannot produce a second OFF.
@@ -136,9 +138,10 @@ class BandResetController(
                 cycleBluetooth()
             }
             override fun onBatchScanResults(results: MutableList<ScanResult>) {
-                AdvertisementDelivery.deliver(results, { System.currentTimeMillis() }, { task ->
+                val receivedWall = System.currentTimeMillis()
+                AdvertisementDelivery.deliver(results, { SystemClock.elapsedRealtimeNanos() }, { task ->
                     if (Looper.myLooper() == Looper.getMainLooper()) task() else handler.post(task)
-                }) { result, receivedAt -> advertisement(result, receivedAt) }
+                }) { result, receivedElapsed -> advertisement(result, receivedElapsed, receivedWall) }
             }
             override fun onScanFailed(errorCode: Int) = failed(errorCode)
             private fun failed(errorCode: Int) {
@@ -155,21 +158,28 @@ class BandResetController(
             } ?: run { report(Result.ERROR); return }
             registration = ticket
             windowMs = timeout
+            packetWindow = AutomaticPacketWindow(timeout)
             val gate = CompletionGate()
             BoundedBluetoothWork.submit(BoundedBluetoothWork.Lane.ADAPTER, lease, 1_500L,
                 { false }, { false }, {
                     if (!lease.valid() || settled) { retirement.retire(ticket); false }
                     else retirement.start(ticket) registration@{
-                        if (!lease.valid() || settled) return@registration false
+                        if (!lease.valid() || settled || scanEntryPermit?.tryEnter() == false) return@registration false
+                        // This exact scan-only permit is the worker handoff. Never read Main host/store/gate here.
                         val elapsed = SystemClock.elapsedRealtime()
                         val wall = System.currentTimeMillis()
+                        packetWindow?.captureEntry(SystemClock.elapsedRealtimeNanos())
                         scannerEntered = true
                         handler.post {
                             startedAtMs = elapsed; startedWall = wall
-                            if (accepting()) handler.postDelayed(onTimeout, (timeout - (SystemClock.elapsedRealtime() - elapsed)).coerceAtLeast(0L))
+                            if (accepting()) {
+                                val remaining = packetWindow?.remainingMs(SystemClock.elapsedRealtimeNanos())
+                                if (remaining == null) report(Result.NOT_FOUND) else handler.postDelayed(onTimeout, remaining)
+                            }
                         }
                         val started = try {
-                            scanner.startScan(null, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCallback)
+                            val filters = listOf(ScanFilter.Builder().setDeviceName(target.advertisementName).build())
+                            scanner.startScan(filters, ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build(), scanCallback)
                             true
                         } catch (e: SecurityException) {
                             Log.w("BtReset.Ctrl", "scan permission revoked during setup", e)
@@ -200,13 +210,8 @@ class BandResetController(
             report(if (armed) Result.RESET_TRIGGERED else Result.DISABLE_FAILED)
         }
         private fun factsLine() = "扫描 ${SystemClock.elapsedRealtime() - startedAtMs}/${windowMs}ms；不同 MAC=${seenAddresses.size}，广播名=$namedSeen"
-        private fun record(mac: String?, name: String?, target: Boolean) {
+        private fun record(mac: String?, name: String?) {
             if (mac != null && seenAddresses.add(mac) && name != null) namedSeen++
-            if (target || nearMisses.size >= 3) return
-            if ((mac?.endsWith(BandMatcher.TARGET_MAC_SUFFIX, true) == true) ||
-                name?.let { n -> listOf("Xiaomi", "Band", "Mi Smart").any { n.contains(it, true) } } == true) {
-                nearMisses.add(if (name != null) "$name ($mac)" else (mac ?: "?"))
-            }
         }
         private fun facts() = RunReport.ScanFacts(windowMs,
             if (startedWall == null) 0L else (SystemClock.elapsedRealtime() - startedAtMs).coerceAtLeast(0L),
