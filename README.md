@@ -312,7 +312,7 @@ APK SHA-256: 49caf1f4e5991ba6c1ab69b14dc7e57bcea50c236906a0952d346c994c726ea3
 
 **已核验与原1.3/code4同包名、同单一证书、code4→5，符合覆盖升级身份条件；不是已经在手机上完成升级。** 本次`adb devices -l`为空：**1.4安装升级/数据与权限保留、设置持久化与下拉现场交互、真实BLE/锁屏/深度Doze、屏幕触发、短锁能耗、停止监控保留恢复、Shizuku/普通后备/OEM交互和通知历史/累计均未做真机验证**。JVM/source/APK核验不替代这些步骤，也不保证锁屏严格三分钟。
 
-Lint仍为 **14项：13 Warning、1 Fatal `ExpiredTargetSdkVersion`，MissingPermission0/Error0**，不是lint-clean。缺签名配置实际在`validateNoguiReleaseSigning`拒绝且`packageRelease`未执行，这是独立fail-closed验证。现有CI仅监听`main`的push及显式workflow_dispatch；本轮不改main/CI、不触发发布workflow或替换rolling latest，不以本地两次构建冒称CI通过。
+Lint仍为 **14项：13 Warning、1 Fatal `ExpiredTargetSdkVersion`，MissingPermission0/Error0**，不是lint-clean。缺签名配置实际在`validateNoguiReleaseSigning`拒绝且`packageRelease`未执行，这是独立fail-closed验证。现有CI仅监听`main`的push及显式workflow_dispatch；本轮不改main/CI、不触发发布workflow或替换rolling latest，不以本地两次构建冒称CI通过。本环境没有`gh` CLI，公开GitHub API读取又受安全验证限制，故CI运行状态未核验。
 
 ### 构建与私密签名
 
