@@ -292,9 +292,27 @@ Lint实测仍为 **14项：13 Warning、1 Fatal `ExpiredTargetSdkVersion`，Miss
 
 本次`adb devices -l`为空。**1.3 真机覆盖升级与数据/权限保留、真实 BLE、Toast 送达、窄屏/大字体按钮布局、日志权限授权/撤销/恢复与根文件写入/裁剪、fooView热启动、Shizuku/普通后备及 OEM 交互、通知历史/累计均未执行现场验收。** JVM/source契约、临时目录存储测试及签名APK检查不替代这些步骤。
 
-### 1.4 待交付边界
+### 1.4 实际交付核验（2026-11-27）
 
-当前仅更新源码身份及上述自动监控说明，**不在此声明 1.4 正式签名构建、CI 发布或真机验收通过**。后续交付可使用 `bt-monitor-nogui-1.4.apk` 命名，但该名称不是现存已核验产物；实际文件路径、大小、APK hash、单一证书及与原 1.3/code 4 的并排身份检查须由交付阶段填写。**1.4 安装升级/数据与权限保留、真实 BLE/锁屏/深度 Doze、屏幕触发、Shizuku/普通后备/OEM 交互和通知历史/累计均未做真机验证**，JVM/source 契约或 debug APK 元数据不替代这些步骤。
+最终交付采用第二次正式构建的实际 APK：
+
+```text
+持久文件: /home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.4.apk
+输出副本: app/build/outputs/apk/release/bt-monitor-nogui-1.4.apk
+包名: com.blreay.bluetoothmonitor.nogui
+版本: 1.4 / versionCode 5
+大小: 2768133 字节
+APK SHA-256: 49caf1f4e5991ba6c1ab69b14dc7e57bcea50c236906a0952d346c994c726ea3
+证书 SHA-256: 7825ccfb3eb4fa47d7bd87ff70c82800fb0801d67907c69d2825f6c2bb492c9a
+```
+
+各任务规格、质量及最终整体源码审查通过后，父会话两次完整强制执行 `testReleaseUnitTest assembleDebug assembleRelease lintDebug`：分别 **21秒、22秒，均97任务全部执行、43 suite / 610项测试零失败/错误/跳过**。最终契约冻结111个编译源码/测试/资源/build/CI/wrapper路径与610个准确case名称，原424名称及Task1六文件保留。第一份先独占保存构建目录外，APK hash为`158f7ff89c1c6b01c63ef240f3b17835c80eab41dbeb4b66591b7c90505a725b`；两次均使用原单一7825cc证书并通过v2签名核验，APK字节不要求可复现。正式签名材料只由构建进程内部读取，未换密钥。
+
+实际 `aapt` / `apksigner` / DEX定义核验包括1.4/code5、SDK31/32/34、NoDisplay launcher与原RUN/广播入口、non-exported `MonitorService` / `MonitorAlarmReceiver`、两项 `connectedDevice` 服务、WAKE_LOCK与原Shizuku provider权限；无boot/INTERNET/WRITE_EXTERNAL_STORAGE或manifest屏幕receiver。实际1个DEX、1725个类定义，71个必需类定义存在，退役`AuditRow` / `LogDropRange`不存在。两份交付副本复制后逐份重验metadata/字节/hash/证书，原1.1/1.2/1.3持久文件、真实备份和旧输出副本保持原hash，没有重编旧版冒充保留。
+
+**已核验与原1.3/code4同包名、同单一证书、code4→5，符合覆盖升级身份条件；不是已经在手机上完成升级。** 本次`adb devices -l`为空：**1.4安装升级/数据与权限保留、设置持久化与下拉现场交互、真实BLE/锁屏/深度Doze、屏幕触发、短锁能耗、停止监控保留恢复、Shizuku/普通后备/OEM交互和通知历史/累计均未做真机验证**。JVM/source/APK核验不替代这些步骤，也不保证锁屏严格三分钟。
+
+Lint仍为 **14项：13 Warning、1 Fatal `ExpiredTargetSdkVersion`，MissingPermission0/Error0**，不是lint-clean。缺签名配置实际在`validateNoguiReleaseSigning`拒绝且`packageRelease`未执行，这是独立fail-closed验证。现有CI仅监听`main`的push及显式workflow_dispatch；本轮不改main/CI、不触发发布workflow或替换rolling latest，不以本地两次构建冒称CI通过。
 
 ### 构建与私密签名
 
@@ -339,10 +357,12 @@ BT_NOGUI_SIGNING_PROPERTIES="$missing_signing_dir/signing.properties" \
 
 共享构建主机发生资源压力时，可仅对当前命令追加 `--max-workers=2 --no-parallel`，或通过临时 `GRADLE_OPTS` 限制并发；不改变测试断言、5秒 JVM fixture 或生产超时。默认并发下曾出现两次原有 JVM fixture 超时，临时限流的完整重跑通过；这支持环境压力假说，但没有证明原始根因，详见验证记录。
 
-源码 `versionName=1.4`，`autoVersionCode=(ciRunNumber ?: 0)+5`：本地默认 **code 5**，CI 使用 **`GITHUB_RUN_NUMBER+5`**，保留原有 nullable CI 递增约定。升级输入为已交付后台 **1.3/code 4**；源码身份预期 code 4→5，正式 APK 的同包同单一证书核验待交付阶段完成，不代表真机升级已通过。如果已安装的是更高 code 的 CI 产物，应使用不低于该 code 的同签名构建，而非用本地 code 5 降级。源码 namespace `com.blreay.bluetoothmonitor`、安装包名 `com.blreay.bluetoothmonitor.nogui`、中文后台 label **蓝牙手环重启·后台**、min31/target32/compile34、生产依赖、UserService version 1 及固定 AIDL 方法/事务 ID 均不随此次版本/文档更新改变；原单一证书签名守卫不变。旧 GUI 独立包的版本号不影响本包。
+源码 `versionName=1.4`，`autoVersionCode=(ciRunNumber ?: 0)+5`：本地默认 **code 5**，CI 使用 **`GITHUB_RUN_NUMBER+5`**，保留原有 nullable CI 递增约定。升级输入为已交付后台 **1.3/code 4**；正式 APK 已核验同包同单一证书、code 4→5，不代表真机升级已通过。如果已安装的是更高 code 的 CI 产物，应使用不低于该 code 的同签名构建，而非用本地 code 5 降级。源码 namespace `com.blreay.bluetoothmonitor`、安装包名 `com.blreay.bluetoothmonitor.nogui`、中文后台 label **蓝牙手环重启·后台**、min31/target32/compile34、生产依赖、UserService version 1 及固定 AIDL 方法/事务 ID 均不随此次版本/文档更新改变；原单一证书签名守卫不变。旧 GUI 独立包的版本号不影响本包。
 
 设计与实际验证记录：
 
+- [1.4自主触发、持久配置与可编辑目标设计](docs/superpowers/specs/2026-11-27-automatic-triggers-target-design.md)
+- [1.4实施、审查与实际交付记录](docs/superpowers/plans/2026-11-27-automatic-triggers-target.md)
 - [1.3紧凑日志与横排按钮设计](docs/superpowers/specs/2026-11-27-compact-log-ui-design.md)
 - [1.3实施、验证与交付记录](docs/superpowers/plans/2026-11-27-compact-log-ui.md)
 - [1.2开关消息与滚动日志设计](docs/superpowers/specs/2026-11-26-miband-log-design.md)

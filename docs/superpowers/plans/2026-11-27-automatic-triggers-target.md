@@ -312,8 +312,8 @@ versionName = "1.4"
 
 ## Task4：父正式构建、APK核验与Git交付
 
-- [ ] **1. 冻结最终源码/testcase契约与原APK。** 重新inspect持久原1.3及额外备份、1.2/1.1；生成当前实际编译源码/resource/build/CI/wrapper所有hash、准确suite/case名称、必需DEX类名单。不可复用旧88/424硬编码为新最终要求。
-- [ ] **2. 两次完整正式强制构建。** 单一Gradle owner，secret仅Gradle内部读取；第一份exclusive保存构建目录外后才第二次。每次检查实际XML零failure/error/skipped，准确名称、任务exit、lint及签名guard成功。
+- [x] **1. 冻结最终源码/testcase契约与原APK。** 重新inspect持久原1.3及额外备份、1.2/1.1；生成当前实际编译源码/resource/build/CI/wrapper所有hash、准确suite/case名称、必需DEX类名单。不可复用旧88/424硬编码为新最终要求。
+- [x] **2. 两次完整正式强制构建。** 单一Gradle owner，secret仅Gradle内部读取；第一份exclusive保存构建目录外后才第二次。每次检查实际XML零failure/error/skipped，准确名称、任务exit、lint及签名guard成功。
 
 ```bash
 source /home/admin/.cache/btreset-build/env.sh
@@ -323,9 +323,9 @@ BT_NOGUI_SIGNING_PROPERTIES=/home/admin/.local/share/bluetooth-monitor-nogui/sig
  --rerun-tasks --stacktrace --console=plain --max-workers=2 --no-parallel
 ```
 
-- [ ] **3. 新公开verifier实际APK检查。** native Write/Edit创建1.4 verifier，沿用公开aapt/apksigner/manifest树/DEX class_def/JUnit契约方法，更新新version/components/WAKE_LOCK真实要求。完整NoDisplay launcher/RUN/Trigger保留；新MonitorService connectedDevice与MonitorAlarmReceiver nonexported，无boot/INTERNET/WRITE/globalDoze；原Shizuku provider/security/SDK和单一78证书/v2有效。实际编译新settings/target/host/scheduler/candidate/UI类存在，retired AuditRow/LogDropRange不存在。logger不作为native proof。
-- [ ] **4. 最终第二份exclusive复制和重验。** `/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.4.apk`与`app/build/outputs/apk/release/bt-monitor-nogui-1.4.apk`。目标存在先inspect/hash，未知不覆盖；复制后逐份metadata/bytes/hash/cert重验。旧1.3/1.2/1.1原输出只从真实保存文件恢复并重验，不重编冒充保留。
-- [ ] **5. ADB与真实边界。** `adb devices -l`有授权设备才做覆盖升级、设置持久化、下拉/手输/精确命中、normal-screen-off/Doze/filteredBLE、组合冲突、短锁、权限撤销/恢复与停止auto保留ON恢复验收。无设备逐项未执行；模拟器不是BLE/厂商Doze真机替代，本任务不下载模拟器。
+- [x] **3. 新公开verifier实际APK检查。** native Write/Edit创建1.4 verifier，沿用公开aapt/apksigner/manifest树/DEX class_def/JUnit契约方法，更新新version/components/WAKE_LOCK真实要求。完整NoDisplay launcher/RUN/Trigger保留；新MonitorService connectedDevice与MonitorAlarmReceiver nonexported，无boot/INTERNET/WRITE/globalDoze；原Shizuku provider/security/SDK和单一78证书/v2有效。实际编译新settings/target/host/scheduler/candidate/UI类存在，retired AuditRow/LogDropRange不存在。logger不作为native proof。
+- [x] **4. 最终第二份exclusive复制和重验。** `/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.4.apk`与`app/build/outputs/apk/release/bt-monitor-nogui-1.4.apk`。目标存在先inspect/hash，未知不覆盖；复制后逐份metadata/bytes/hash/cert重验。旧1.3/1.2/1.1原输出只从真实保存文件恢复并重验，不重编冒充保留。
+- [x] **5. ADB与真实边界。** `adb devices -l`有授权设备才做覆盖升级、设置持久化、下拉/手输/精确命中、normal-screen-off/Doze/filteredBLE、组合冲突、短锁、权限撤销/恢复与停止auto保留ON恢复验收。无设备逐项未执行；模拟器不是BLE/厂商Doze真机替代，本任务不下载模拟器。
 - [ ] **6. 补真实文档、提交推送。** 仅事实补README/spec/plan。最终编译hash/准确XML/实际artifact再次核对，attributed commit末行`Co-Authored-By: Claude Code <noreply@anthropic.com>`；只正常push`origin bluetooth_monitor_shizuku_nogui`，ls-remote与HEAD相同。用户原`design.md`仍未跟踪，不能claim绝对clean或把它stage。CI可读则查，否则披露受限，不绕过安全限制、安装/触发发布workflow。最终给APK路径、1.4/code5、简短设置方式、实际测试及未做真机/CI边界。
 
 ## 完整无release命令
@@ -392,3 +392,8 @@ BT_NOGUI_SIGNING_PROPERTIES=/tmp/btreset-1.4-no-signing.properties \
 - 两审通过后父fresh完整无release：`/tmp/btreset-1.4-parent-task3-final-kavx0cei`实际exit0、24秒、73/73任务执行、43suite/610tests/0failure/error/skipped；111hash前后不变、六Task1及全部声明/执行名称一致，准确43suite/610case map与Task2父fresh完全相同。当前已审README hash仍d6cb63d…；tracked diff恰为三Task3路径及父plan，只有原design未跟踪，diffcheck通过。lint仍13Warning+1Fatal，不称clean；debug实际SHA256`437f8f915f3dbd142e49c6f68008082f766fbb8e5d24bef0272f85da70934d6a`，不是正式签名release或设备证明。
 - Fresh最终整体审查实际FINAL REVIEW PASS，无verified Critical/Important/actionable Minor；独立追踪触发→checked周期旋转→真实host→exact child→冻结名称BLE→原安全恢复，确认drain/有限slice/非续期handoff/retained cleanup/native lateproof/原ResetService身份/原子历史与计数不退化。审查结束111/六Task1/README hash不变，原424及12身份名称保留，父fresh43/610实际XML独立解析一致；审查不等于真机或正式签名验收。Task3按两审、整体审查及父fresh/scope实际完成，接着允许列表提交。
 - 正式构建前父再次实际核验真实1.1/1.2/1.3持久APK、额外备份及现有输出副本：`/tmp/btreset-1.4-pre-signing-originals-P6HxWyTu/originals.json`、`output-target-inspection.json`，全部原metadata/hash/单一78证书不变；两个1.4交付目标实际尚不存在。此为原文件保全检查，不是1.4正式构建。
+- Task3实际attributed允许列表提交`bf912d501619ee16774c85a7413d9fcbbcacca49`：仅三已审文件与父plan，staged集合/diffcheck精确，提交后只有原design未跟踪。最终契约`/tmp/btreset-1.4-final-contract-7krheC83/contract.json`实际111编译路径、43suite/610准确case、71个required DEX类；公开verifier SHA256`82e8022d28552dbc01e9fd9a5f40f05600f7a9ad4da7058b1ee3f410e01d7b4e`，不复用旧88/424当新总要求。
+- 父第一次完整正式构建`/tmp/btreset-1.4-parent-signed-first-kuu5zsx5`：actualexit0、21秒、97/97任务执行、43suite/610tests/0failure/error/skipped，111前后hash和六Task1不变。`app-release.apk`先exclusive保存构建目录外，再实际aapt/apksigner/manifest树/DEX核验：1.4/code5、2768133字节、SHA256`158f7ff89c1c6b01c63ef240f3b17835c80eab41dbeb4b66591b7c90505a725b`、原single7825cc证书/v2。报告`apk-verification.json`；不是设备验收。
+- 父第二次同一完整正式命令`/tmp/btreset-1.4-parent-signed-second-0oo21_tg`：actualexit0、22秒、97/97执行、准确43suite/610zero、111/六Task1保持；两次release均原单一证书，字节不要求可复现。实际第二份2768133字节、SHA256`49caf1f4e5991ba6c1ab69b14dc7e57bcea50c236906a0952d346c994c726ea3`。实际1个DEX/1725类定义、全部71required存在/退役两类不存在；NoDisplay/原入口、两connectedDevice/nonexported监控组件/WAKE_LOCK/原provider与SDK边界通过。两次lint均14=13Warning+1FatalExpiredTargetSdkVersion、MissingPermission/Error0，不称clean。
+- 第二份实际exclusive交付并逐份inspect重验：`/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.4.apk`和`app/build/outputs/apk/release/bt-monitor-nogui-1.4.apk`，报告`/tmp/btreset-1.4-parent-signed-second-0oo21_tg/delivery-verification.json`。真实1.1/1.2/1.3及额外备份、旧输出副本原hash保持；无未知覆盖/旧版重编。实际包名/单一证书一致且code4→5，符合覆盖身份条件，不等于真机已升级。
+- 正式交付后实际`adb devices -l`只有列表标题、无设备；覆盖升级/数据权限保留、设置与候选交互、BLE/息屏/深Doze/屏幕触发、短锁能耗、停止保恢复、Shizuku/OEM及历史累计现场验收全部未执行。没有下载模拟器；签名材料只由Gradle内部读取，未读取/生成/替换/提交密钥。父仅native Edit补README/spec/plan真实artifact/证据与边界，编译源码/契约不改变；正常分支push及远端/CI只读核验仍待执行。

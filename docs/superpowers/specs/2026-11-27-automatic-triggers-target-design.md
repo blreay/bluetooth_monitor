@@ -113,3 +113,11 @@
 - https://developer.android.com/develop/connectivity/bluetooth/ble/background
 
 本轮官方页面正文抓取受限，上述平台说明核对自官方搜索索引；锁屏实际节奏、过滤器与目标手环广播仍须设备验收。
+
+## 实际交付核验（2026-11-27）
+
+各任务规格/质量及最终整体源码审查通过。父会话对最终111路径与43suite/610准确case契约两次完整强制test/debug/release/lint，分别21秒、22秒，均97任务全部执行、610测试零失败/错误/跳过；源码hash与Task1六文件不变。第一份先独占保存在构建目录外，两份正式APK均经实际aapt/apksigner/DEX核验，同单一原7825cc证书/v2签名；原1.1/1.2/1.3及真实备份、旧输出副本保持原hash。
+
+第二份实际交付：`/home/admin/bluetooth-monitor-apks/bt-monitor-nogui-1.4.apk`，输出副本`app/build/outputs/apk/release/bt-monitor-nogui-1.4.apk`。包名`com.blreay.bluetoothmonitor.nogui`，1.4/code5，2768133字节，APK SHA256`49caf1f4e5991ba6c1ab69b14dc7e57bcea50c236906a0952d346c994c726ea3`；证书SHA256`7825ccfb3eb4fa47d7bd87ff70c82800fb0801d67907c69d2825f6c2bb492c9a`。实际manifest保持NoDisplay/原入口和权限边界，新nonexported监控组件/connectedDevice/WAKE_LOCK通过；1个DEX、1725定义、71个必需类真实存在，退役两类不存在。复制后两路径逐份重验，符合原1.3/code4覆盖升级身份条件，不等于已经真机升级。
+
+公开执行与APK证据：`/tmp/btreset-1.4-final-contract-7krheC83/contract.json`、`/tmp/btreset-1.4-parent-signed-first-kuu5zsx5/`、`/tmp/btreset-1.4-parent-signed-second-0oo21_tg/delivery-verification.json`。Lint仍13Warning+1FatalExpiredTargetSdkVersion，MissingPermission/Error0，不是lint-clean。实际adb设备列表为空；覆盖升级/数据权限保留、设置与下拉交互、BLE/锁屏/Doze/屏幕触发、短锁能耗/停止保恢复、Shizuku/OEM/通知历史累计均未做现场验收。未安装模拟器、未触发CI发布workflow或修改rolling latest，不能把本地核验冒称设备或CI通过。
